@@ -152,6 +152,7 @@ function App() {
   const [providerTestStatus, setProviderTestStatus] = useState<string | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [providerDebugInfo, setProviderDebugInfo] = useState<ProviderDebugInfo | null>(null);
+  const [testTransport, setTestTransport] = useState<'server' | 'browser'>('server');
 
   useEffect(() => {
     try {
@@ -364,23 +365,53 @@ function App() {
     setProviderTestStatus(null);
     setProviderDebugInfo(null);
     try {
-      const res = await fetch('/api/provider/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerConfig, debugMode }),
-      });
-      const payload = await readApiPayload(res);
-      if (payload.debug) {
-        setProviderDebugInfo(payload.debug);
+      if (testTransport === 'server') {
+        const res = await fetch('/api/provider/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerConfig, debugMode }),
+        });
+        const payload = await readApiPayload(res);
+        if (payload.debug) {
+          setProviderDebugInfo(payload.debug);
+        }
+        if (!res.ok) {
+          throw new Error(payload.error || '连接测试失败');
+        }
+        setProviderTestStatus(`服务端连接成功：${payload.provider}，请求 ${payload.requestUrl}，返回 ${payload.preview}`);
+      } else {
+        const requestUrl = providerConfig.baseUrl.trim();
+        const requestBody = {
+          model: providerConfig.model.trim() || defaultProviderConfig.model,
+          messages: [{ role: 'user', content: 'Reply with exactly: CONNECTED' }],
+        };
+        setProviderDebugInfo({
+          requestUrl,
+          requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
+        });
+        const res = await fetch(requestUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            Authorization: `Bearer ${providerConfig.apiKey.trim()}`,
+          },
+          body: JSON.stringify(requestBody),
+        });
+        const text = await res.text();
+        setProviderDebugInfo({
+          requestUrl,
+          requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
+          responseStatus: res.status,
+          responseContentType: res.headers.get('content-type'),
+          responsePreview: text.slice(0, 600),
+        });
+        if (!res.ok) {
+          throw new Error(`浏览器直连失败：${res.status} ${text.slice(0, 240)}`);
+        }
+        setProviderTestStatus(`浏览器直连成功：请求 ${requestUrl}，返回 ${text.slice(0, 120)}`);
       }
-      if (!res.ok) {
-        throw new Error(payload.error || '连接测试失败');
-      }
-      setProviderTestStatus(`连接成功：${payload.provider}，请求 ${payload.requestUrl}，返回 ${payload.preview}`);
     } catch (testError: any) {
-      if (testError?.debug) {
-        setProviderDebugInfo(testError.debug);
-      }
       setProviderTestStatus(`连接失败：${testError.message || '未知错误'}`);
     } finally {
       setTestingProvider(false);
@@ -862,6 +893,26 @@ function App() {
               />
               启用调试模式
             </label>
+
+            <div className="mt-4">
+              <div className="mb-2 text-sm font-semibold text-slate-300">测试通道</div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTestTransport('server')}
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${testTransport === 'server' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/8 bg-white/5 text-slate-300 hover:bg-white/10'}`}
+                >
+                  服务端转发
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTestTransport('browser')}
+                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${testTransport === 'browser' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/8 bg-white/5 text-slate-300 hover:bg-white/10'}`}
+                >
+                  浏览器直连
+                </button>
+              </div>
+            </div>
 
             {providerTestStatus && (
               <div className={`mt-4 rounded-2xl border p-4 text-sm leading-6 ${providerTestStatus.startsWith('连接成功') ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/20 bg-rose-400/10 text-rose-300'}`}>
