@@ -126,6 +126,22 @@ const readApiPayload = async (response: Response) => {
   }
 };
 
+const getProviderText = (payload: any) => {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (typeof item?.text === 'string') return item.text;
+        return '';
+      })
+      .join('')
+      .trim();
+  }
+  return '';
+};
+
 function App() {
   const [ticker, setTicker] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -222,6 +238,55 @@ function App() {
         }
       : {};
 
+  const callCustomProviderDirect = async (
+    messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
+    customConfig?: Record<string, unknown>,
+  ) => {
+    const requestUrl = providerConfig.baseUrl.trim();
+    const requestBody = {
+      model: providerConfig.model.trim() || defaultProviderConfig.model,
+      messages,
+      ...(customConfig || {}),
+    };
+
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${providerConfig.apiKey.trim()}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    const responseText = await response.text();
+    setProviderDebugInfo({
+      requestUrl,
+      requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
+      responseStatus: response.status,
+      responseContentType: response.headers.get('content-type'),
+      responsePreview: responseText.slice(0, 600),
+    });
+
+    if (!response.ok) {
+      throw new Error(`第三方接口请求失败：${response.status} ${responseText.slice(0, 240)}`);
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      throw new Error(`第三方接口返回了非 JSON 内容：${responseText.slice(0, 240)}`);
+    }
+
+    const text = getProviderText(payload);
+    if (!text) {
+      throw new Error('第三方接口返回为空内容');
+    }
+
+    return text;
+  };
+
   const handleSelectResult = (symbol: string) => {
     setTicker(symbol);
     setSearchQuery(symbol);
@@ -250,6 +315,23 @@ function App() {
         }
       } catch (fetchError) {
         console.error('Resolve symbol failed:', fetchError);
+      }
+    }
+
+    if (/[\u4e00-\u9fa5]/.test(symbolToUse) && hasCustomProvider) {
+      try {
+        const resolved = await callCustomProviderDirect([
+          {
+            role: 'user',
+            content: `What is the Yahoo Finance ticker symbol for "${symbolToUse}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.`,
+          },
+        ]);
+        const clean = resolved.trim().replace(/`/g, '');
+        if (clean) {
+          symbolToUse = clean;
+        }
+      } catch (resolveError) {
+        console.error('Custom provider symbol resolve failed:', resolveError);
       }
     }
 
@@ -293,6 +375,41 @@ function App() {
     setAnalysis('');
     setAnalysisSource(null);
     try {
+      if (hasCustomProvider) {
+        const recentSeries = series.slice(-20);
+        const summaryPrompt = [
+          `你是一名机构级多资产研究主管，请用专业、克制、可执行的中文输出 Markdown 分析报告。`,
+          `目标资产：${symbol}`,
+          `名称：${quote?.shortName || quote?.longName || symbol}`,
+          `最新价：${quote?.regularMarketPrice ?? 'N/A'} ${quote?.currency || ''}`,
+          `当日涨跌幅：${quote?.regularMarketChangePercent ?? 'N/A'}%`,
+          `市值：${quote?.marketCap ?? 'N/A'}`,
+          `PE：${quote?.trailingPE ?? 'N/A'}`,
+          `风险偏好：${preferences.riskProfile}`,
+          `分析周期：${preferences.timeframe}`,
+          `重点维度：${preferences.dimensions.join('、')}`,
+          `自定义关注点：${preferences.customFocus || '无'}`,
+          `趋势状态：${indicators?.trend.regime || 'N/A'}`,
+          `RSI14：${indicators?.momentum.rsi14 ?? 'N/A'}`,
+          `MACD：${indicators?.momentum.macd ?? 'N/A'} / Signal ${indicators?.momentum.signal ?? 'N/A'}`,
+          `波动率：${indicators?.volatility.annualizedVolatility ?? 'N/A'}%`,
+          `支撑位：${indicators?.supportResistance.support ?? 'N/A'}`,
+          `阻力位：${indicators?.supportResistance.resistance ?? 'N/A'}`,
+          `综合信号评分：${indicators?.signalScore ?? 'N/A'} / ${indicators?.signalLabel || 'N/A'}`,
+          `最近20个交易日数据：`,
+          recentSeries.map((item) => `${item.date} | close ${item.close} | rsi ${item.rsi14 ?? 'N/A'} | macdHist ${item.macdHistogram ?? 'N/A'} | volume ${item.volume}`).join('\n'),
+          `请输出：1. 市场结论摘要 2. 技术指标拆解 3. 量化执行框架 4. 风险点与反证条件 5. 操作建议`,
+        ].join('\n');
+
+        const text = await callCustomProviderDirect(
+          [{ role: 'user', content: summaryPrompt }],
+          { temperature: 0.3 },
+        );
+        setAnalysis(text);
+        setAnalysisSource('third-party');
+        return;
+      }
+
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
