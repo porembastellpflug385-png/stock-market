@@ -126,6 +126,18 @@ const readApiPayload = async (response: Response) => {
   }
 };
 
+const getPayloadError = (payload: any, fallback: string) => {
+  if (typeof payload === 'string' && payload.trim()) return payload;
+  if (typeof payload?.error === 'string' && payload.error.trim()) return payload.error;
+  if (typeof payload?.message === 'string' && payload.message.trim()) return payload.message;
+  return fallback;
+};
+
+const normalizeSearchResults = (payload: any) => {
+  if (!Array.isArray(payload)) return [];
+  return payload.filter((item) => item && typeof item.symbol === 'string').slice(0, 8);
+};
+
 const getProviderText = (payload: any) => {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
@@ -206,11 +218,17 @@ function App() {
         });
         if (res.ok) {
           const data = await readApiPayload(res);
-          setSearchResults(data.slice(0, 8));
-          setShowDropdown(true);
+          const results = normalizeSearchResults(data);
+          setSearchResults(results);
+          setShowDropdown(results.length > 0);
+        } else {
+          const payload = await readApiPayload(res);
+          console.error('Search request failed:', getPayloadError(payload, `HTTP ${res.status}`));
         }
       } catch (fetchError) {
         console.error('Search failed:', fetchError);
+        setSearchResults([]);
+        setShowDropdown(false);
       } finally {
         setIsSearching(false);
       }
@@ -338,8 +356,9 @@ function App() {
         });
         if (res.ok) {
           const data = await readApiPayload(res);
-          if (Array.isArray(data) && data[0]?.symbol) {
-            symbolToUse = data[0].symbol;
+          const results = normalizeSearchResults(data);
+          if (results[0]?.symbol) {
+            symbolToUse = results[0].symbol;
           }
         }
       } catch (fetchError) {
