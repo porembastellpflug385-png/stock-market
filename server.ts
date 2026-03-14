@@ -21,6 +21,25 @@ const defaultServerProvider =
       }
     : null;
 
+type FallbackQuote = {
+  symbol: string;
+  shortName?: string;
+  longName?: string;
+  currency?: string;
+  regularMarketPrice?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  regularMarketDayHigh?: number;
+  regularMarketDayLow?: number;
+  regularMarketVolume?: number;
+  marketCap?: number;
+  fiftyTwoWeekHigh?: number;
+  fiftyTwoWeekLow?: number;
+  trailingPE?: number;
+  dividendYield?: number;
+  exchange?: string;
+};
+
 type ThirdPartyLLMConfig = {
   baseUrl: string;
   apiKey: string;
@@ -155,30 +174,122 @@ const maskModelLabel = (config: ThirdPartyLLMConfig) =>
 const getRangeMonths = (timeframe?: AnalysisPreferences['timeframe']) =>
   timeframe ? timeframeMonths[timeframe] : timeframeMonths[defaultPreferences.timeframe];
 
-const fetchMarketBundle = async (ticker: string, timeframe?: AnalysisPreferences['timeframe']) => {
-  const end = new Date();
-  const start = new Date();
-  start.setMonth(start.getMonth() - getRangeMonths(timeframe));
+const isMainlandTicker = (ticker: string) => /\.(SS|SZ)$/i.test(ticker);
 
-  const [quote, chartData] = await Promise.all([
-    yahooFinance.quote(ticker),
-    yahooFinance.chart(ticker, {
-      period1: start,
-      period2: end,
-      interval: "1d",
-    }),
-  ]);
+const toEastmoneySecid = (ticker: string) => {
+  const upper = ticker.trim().toUpperCase();
+  if (upper.endsWith('.SS')) return `1.${upper.replace('.SS', '')}`;
+  if (upper.endsWith('.SZ')) return `0.${upper.replace('.SZ', '')}`;
+  return null;
+};
 
-  if (!quote) {
-    throw new Error("Quote not found. The symbol may be invalid or delisted.");
+const safeNumber = (value: unknown) => {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : undefined;
+};
+
+const eastmoneyPrice = (value: unknown) => {
+  const num = safeNumber(value);
+  return num == null ? undefined : num / 100;
+};
+
+const fetchEastmoneyBundle = async (ticker: string) => {
+  const secid = toEastmoneySecid(ticker);
+  if (!secid) {
+    throw new Error(`Eastmoney fallback does not support ticker ${ticker}`);
   }
 
-  const history = ((chartData?.quotes || []) as RawChartPoint[]).filter((point) => point.close != null);
+  const quoteUrl = new URL('https://push2.eastmoney.com/api/qt/stock/get');
+  quoteUrl.searchParams.set('secid', secid);
+  quoteUrl.searchParams.set('fields', 'f43,f44,f45,f46,f47,f48,f57,f58,f60,f116,f164,f167,f169,f170');
+
+  const chartUrl = new URL('https://push2his.eastmoney.com/api/qt/stock/kline/get');
+  chartUrl.searchParams.set('secid', secid);
+  chartUrl.searchParams.set('klt', '101');
+  chartUrl.searchParams.set('fqt', '1');
+  chartUrl.searchParams.set('lmt', '260');
+  chartUrl.searchParams.set('fields1', 'f1,f2,f3,f4,f5,f6');
+  chartUrl.searchParams.set('fields2', 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61');
+
+  const [quoteRes, chartRes] = await Promise.all([fetch(quoteUrl), fetch(chartUrl)]);
+  const quoteJson = await quoteRes.json();
+  const chartJson = await chartRes.json();
+  const quoteData = quoteJson?.data;
+  const kline = chartJson?.data?.klines;
+
+  if (!quoteData || !Array.isArray(kline) || kline.length === 0) {
+    throw new Error(`Eastmoney returned no data for ${ticker}`);
+  }
+
+  const quote: FallbackQuote = {
+    symbol: quoteData.f57 || ticker,
+    shortName: quoteData.f58 || ticker,
+    longName: quoteData.f58 || ticker,
+    currency: 'CNY',
+    regularMarketPrice: eastmoneyPrice(quoteData.f43),
+    regularMarketChange: eastmoneyPrice(quoteData.f169),
+    regularMarketChangePercent: eastmoneyPrice(quoteData.f170),
+    regularMarketDayHigh: eastmoneyPrice(quoteData.f44),
+    regularMarketDayLow: eastmoneyPrice(quoteData.f45),
+    regularMarketVolume: safeNumber(quoteData.f47),
+    marketCap: safeNumber(quoteData.f116),
+    trailingPE: eastmoneyPrice(quoteData.f164),
+    exchange: ticker.toUpperCase().endsWith('.SS') ? 'SSE' : 'SZSE',
+  };
+
+  const history = kline
+    .map((line: string) => {
+      const [date, open, close, high, low, volume] = line.split(',');
+      return {
+        date: new Date(date),
+        open: Number(open),
+        close: Number(close),
+        high: Number(high),
+        low: Number(low),
+        volume: Number(volume),
+      };
+    })
+    .filter((item: any) => Number.isFinite(item.close));
+
   return {
     quote,
     history,
     packet: createAnalysisPacket(history),
   };
+};
+
+const fetchMarketBundle = async (ticker: string, timeframe?: AnalysisPreferences['timeframe']) => {
+  const end = new Date();
+  const start = new Date();
+  start.setMonth(start.getMonth() - getRangeMonths(timeframe));
+
+  try {
+    const [quote, chartData] = await Promise.all([
+      yahooFinance.quote(ticker),
+      yahooFinance.chart(ticker, {
+        period1: start,
+        period2: end,
+        interval: "1d",
+      }),
+    ]);
+
+    if (!quote) {
+      throw new Error("Quote not found. The symbol may be invalid or delisted.");
+    }
+
+    const history = ((chartData?.quotes || []) as RawChartPoint[]).filter((point) => point.close != null);
+    return {
+      quote,
+      history,
+      packet: createAnalysisPacket(history),
+    };
+  } catch (error) {
+    if (isMainlandTicker(ticker)) {
+      console.warn(`Yahoo Finance failed for ${ticker}, falling back to Eastmoney.`);
+      return fetchEastmoneyBundle(ticker);
+    }
+    throw error;
+  }
 };
 
 const formatNumber = (value?: number | null) => {
