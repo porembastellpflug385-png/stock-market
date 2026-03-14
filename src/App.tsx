@@ -168,7 +168,7 @@ function App() {
   const [providerTestStatus, setProviderTestStatus] = useState<string | null>(null);
   const [debugMode, setDebugMode] = useState(false);
   const [providerDebugInfo, setProviderDebugInfo] = useState<ProviderDebugInfo | null>(null);
-  const [testTransport, setTestTransport] = useState<'server' | 'browser'>('server');
+  const [testTransport, setTestTransport] = useState<'server' | 'browser'>('browser');
 
   useEffect(() => {
     try {
@@ -284,6 +284,35 @@ function App() {
       throw new Error('第三方接口返回为空内容');
     }
 
+    return text;
+  };
+
+  const testCustomProviderDirect = async () => {
+    const requestUrl = providerConfig.baseUrl.trim();
+    const requestBody = {
+      model: providerConfig.model.trim() || defaultProviderConfig.model,
+      messages: [{ role: 'user', content: 'Reply with exactly: CONNECTED' }],
+    };
+    const res = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${providerConfig.apiKey.trim()}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
+    const text = await res.text();
+    setProviderDebugInfo({
+      requestUrl,
+      requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
+      responseStatus: res.status,
+      responseContentType: res.headers.get('content-type'),
+      responsePreview: text.slice(0, 600),
+    });
+    if (!res.ok) {
+      throw new Error(`浏览器直连失败：${res.status} ${text.slice(0, 240)}`);
+    }
     return text;
   };
 
@@ -497,38 +526,24 @@ function App() {
         }
         setProviderTestStatus(`服务端连接成功：${payload.provider}，请求 ${payload.requestUrl}，返回 ${payload.preview}`);
       } else {
-        const requestUrl = providerConfig.baseUrl.trim();
-        const requestBody = {
-          model: providerConfig.model.trim() || defaultProviderConfig.model,
-          messages: [{ role: 'user', content: 'Reply with exactly: CONNECTED' }],
-        };
-        setProviderDebugInfo({
-          requestUrl,
-          requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
-        });
-        const res = await fetch(requestUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            Authorization: `Bearer ${providerConfig.apiKey.trim()}`,
-          },
-          body: JSON.stringify(requestBody),
-        });
-        const text = await res.text();
-        setProviderDebugInfo({
-          requestUrl,
-          requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
-          responseStatus: res.status,
-          responseContentType: res.headers.get('content-type'),
-          responsePreview: text.slice(0, 600),
-        });
-        if (!res.ok) {
-          throw new Error(`浏览器直连失败：${res.status} ${text.slice(0, 240)}`);
-        }
-        setProviderTestStatus(`浏览器直连成功：请求 ${requestUrl}，返回 ${text.slice(0, 120)}`);
+        const text = await testCustomProviderDirect();
+        setProviderTestStatus(`浏览器直连成功：请求 ${providerConfig.baseUrl.trim()}，返回 ${text.slice(0, 120)}`);
       }
     } catch (testError: any) {
+      if (
+        testTransport === 'server' &&
+        typeof testError?.message === 'string' &&
+        /NOT_FOUND|404|could not be found/i.test(testError.message)
+      ) {
+        try {
+          const text = await testCustomProviderDirect();
+          setTestTransport('browser');
+          setProviderTestStatus(`服务端转发不可用，但浏览器直连成功。该网关将自动按浏览器直连方式使用。返回 ${text.slice(0, 120)}`);
+          return;
+        } catch {
+          // keep original server-side failure below
+        }
+      }
       setProviderTestStatus(`连接失败：${testError.message || '未知错误'}`);
     } finally {
       setTestingProvider(false);
@@ -1028,6 +1043,9 @@ function App() {
                 >
                   浏览器直连
                 </button>
+              </div>
+              <div className="mt-2 text-xs leading-5 text-slate-500">
+                对于部分第三方网关，服务端转发会被上游拒绝，但浏览器直连可正常使用。当前自定义第三方分析默认按浏览器直连执行。
               </div>
             </div>
 
