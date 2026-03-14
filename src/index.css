@@ -1,1 +1,46 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background:
+    radial-gradient(circle at top, rgba(71, 85, 105, 0.24), transparent 28%),
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.08), transparent 22%),
+    linear-gradient(180deg, #06080d 0%, #0a0f18 45%, #0d1320 100%);
+}
+
+body {
+  min-height: 100vh;
+  background: transparent;
+  color: #e5eefc;
+  font-family:
+    "SF Pro Display",
+    "SF Pro Text",
+    "Helvetica Neue",
+    "PingFang SC",
+    "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: rgba(125, 211, 252, 0.2);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.35);
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  border: 2px solid transparent;
+}
