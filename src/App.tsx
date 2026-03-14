@@ -58,6 +58,14 @@ type ProviderConfig = {
   model: string;
 };
 
+type ProviderDebugInfo = {
+  requestUrl?: string;
+  requestBodyPreview?: string;
+  responseStatus?: number;
+  responseContentType?: string | null;
+  responsePreview?: string;
+};
+
 const providerStorageKey = 'market-analyzer-provider-config';
 const defaultProviderConfig: ProviderConfig = {
   baseUrl: '',
@@ -142,6 +150,8 @@ function App() {
   const [providerConfig, setProviderConfig] = useState<ProviderConfig>(defaultProviderConfig);
   const [testingProvider, setTestingProvider] = useState(false);
   const [providerTestStatus, setProviderTestStatus] = useState<string | null>(null);
+  const [debugMode, setDebugMode] = useState(false);
+  const [providerDebugInfo, setProviderDebugInfo] = useState<ProviderDebugInfo | null>(null);
 
   useEffect(() => {
     try {
@@ -341,6 +351,7 @@ function App() {
     window.localStorage.removeItem(providerStorageKey);
     setProviderConfig(defaultProviderConfig);
     setProviderTestStatus(null);
+    setProviderDebugInfo(null);
   };
 
   const testProviderConnection = async () => {
@@ -351,18 +362,25 @@ function App() {
 
     setTestingProvider(true);
     setProviderTestStatus(null);
+    setProviderDebugInfo(null);
     try {
       const res = await fetch('/api/provider/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerConfig }),
+        body: JSON.stringify({ providerConfig, debugMode }),
       });
       const payload = await readApiPayload(res);
+      if (payload.debug) {
+        setProviderDebugInfo(payload.debug);
+      }
       if (!res.ok) {
         throw new Error(payload.error || '连接测试失败');
       }
       setProviderTestStatus(`连接成功：${payload.provider}，请求 ${payload.requestUrl}，返回 ${payload.preview}`);
     } catch (testError: any) {
+      if (testError?.debug) {
+        setProviderDebugInfo(testError.debug);
+      }
       setProviderTestStatus(`连接失败：${testError.message || '未知错误'}`);
     } finally {
       setTestingProvider(false);
@@ -835,9 +853,36 @@ function App() {
               当前状态：{hasCustomProvider ? '已启用自定义第三方接口' : '未配置，将回退到服务端默认 OpenAI 或规则引擎'}。
             </div>
 
+            <label className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300">
+              <input
+                type="checkbox"
+                checked={debugMode}
+                onChange={(event) => setDebugMode(event.target.checked)}
+                className="h-4 w-4 rounded border-white/10 bg-transparent text-sky-300 focus:ring-sky-300"
+              />
+              启用调试模式
+            </label>
+
             {providerTestStatus && (
               <div className={`mt-4 rounded-2xl border p-4 text-sm leading-6 ${providerTestStatus.startsWith('连接成功') ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/20 bg-rose-400/10 text-rose-300'}`}>
                 {providerTestStatus}
+              </div>
+            )}
+
+            {debugMode && providerDebugInfo && (
+              <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 p-4 text-xs leading-6 text-slate-300">
+                <div className="mb-2 font-semibold text-slate-100">调试信息</div>
+                <div><span className="text-slate-500">Request URL:</span> {providerDebugInfo.requestUrl || 'N/A'}</div>
+                <div><span className="text-slate-500">Response Status:</span> {providerDebugInfo.responseStatus ?? 'N/A'}</div>
+                <div><span className="text-slate-500">Content-Type:</span> {providerDebugInfo.responseContentType || 'N/A'}</div>
+                <div className="mt-3">
+                  <div className="mb-1 text-slate-500">Request Body Preview</div>
+                  <pre className="overflow-auto rounded-xl border border-white/6 bg-black/20 p-3 text-[11px] text-slate-300">{providerDebugInfo.requestBodyPreview || 'N/A'}</pre>
+                </div>
+                <div className="mt-3">
+                  <div className="mb-1 text-slate-500">Response Preview</div>
+                  <pre className="overflow-auto rounded-xl border border-white/6 bg-black/20 p-3 text-[11px] text-slate-300">{providerDebugInfo.responsePreview || 'N/A'}</pre>
+                </div>
               </div>
             )}
 

@@ -27,6 +27,19 @@ type ThirdPartyLLMConfig = {
   model: string;
 };
 
+type ThirdPartyMessage = {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+};
+
+type ThirdPartyDebug = {
+  requestUrl: string;
+  requestBodyPreview: string;
+  responseStatus?: number;
+  responseContentType?: string | null;
+  responsePreview?: string;
+};
+
 const normalizeChatCompletionsUrl = (baseUrl: string) => {
   const sanitized = baseUrl.trim().replace(/\/+$/, '');
   if (sanitized.endsWith('/chat/completions')) return sanitized;
@@ -77,12 +90,26 @@ const summarizeNonJsonResponse = (text: string) => {
   return `Endpoint did not return valid JSON. Response preview: ${clean}`;
 };
 
-const generateWithThirdParty = async (
-  prompt: string,
-  config: ThirdPartyLLMConfig,
-  options?: { temperature?: number },
-) => {
+const generateWithThirdParty = async ({
+  messages,
+  config,
+  customConfig,
+}: {
+  messages: ThirdPartyMessage[];
+  config: ThirdPartyLLMConfig;
+  customConfig?: Record<string, unknown>;
+}) => {
   const requestUrl = normalizeChatCompletionsUrl(config.baseUrl);
+  const requestBody = {
+    model: config.model,
+    messages,
+    ...(customConfig || {}),
+  };
+  const debug: ThirdPartyDebug = {
+    requestUrl,
+    requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
+  };
+
   const response = await fetch(requestUrl, {
     method: 'POST',
     headers: {
@@ -90,40 +117,36 @@ const generateWithThirdParty = async (
       Accept: 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
     },
-    body: JSON.stringify({
-      model: config.model,
-      temperature: options?.temperature ?? 0.2,
-      messages: [
-        {
-          role: 'system',
-          content: 'You are a precise financial and market analysis assistant.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    }),
+    body: JSON.stringify(requestBody),
   });
 
   const responseText = await response.text();
+  debug.responseStatus = response.status;
+  debug.responseContentType = response.headers.get('content-type');
+  debug.responsePreview = responseText.slice(0, 600);
 
   if (!response.ok) {
-    throw new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`);
+    const error = new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`) as Error & { debug?: ThirdPartyDebug };
+    error.debug = debug;
+    throw error;
   }
 
   let payload: any;
   try {
     payload = JSON.parse(responseText);
   } catch {
-    throw new Error(`${summarizeNonJsonResponse(responseText)} Request URL: ${requestUrl}`);
+    const error = new Error(`${summarizeNonJsonResponse(responseText)} Request URL: ${requestUrl}`) as Error & { debug?: ThirdPartyDebug };
+    error.debug = debug;
+    throw error;
   }
 
   const text = getTextFromChatResponse(payload);
   if (!text) {
-    throw new Error('Third-party LLM returned empty content');
+    const error = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
+    error.debug = debug;
+    throw error;
   }
-  return text;
+  return { text, debug };
 };
 
 const maskModelLabel = (config: ThirdPartyLLMConfig) =>
@@ -269,11 +292,12 @@ async function startServer() {
 
       if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query) && (thirdPartyConfig || defaultServerProvider)) {
         const tickerResolvePrompt = `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.`;
-        const maybeTicker = (await generateWithThirdParty(
-          tickerResolvePrompt,
-          thirdPartyConfig || defaultServerProvider!,
-          { temperature: 0 },
-        )).trim().replace(/`/g, '');
+        const maybeTicker = (
+          await generateWithThirdParty({
+            messages: [{ role: 'user', content: tickerResolvePrompt }],
+            config: thirdPartyConfig || defaultServerProvider!,
+          })
+        ).text.trim().replace(/`/g, '');
         if (maybeTicker) {
           try {
             const fallbackQuote = await yahooFinance.quote(maybeTicker);
@@ -384,10 +408,14 @@ async function startServer() {
 
       const prompt = buildPrompt(ticker, bundle, preferences);
       const activeProvider = thirdPartyConfig || defaultServerProvider!;
-      const analysisText = await generateWithThirdParty(prompt, activeProvider, { temperature: 0.3 });
+      const analysisResult = await generateWithThirdParty({
+        messages: [{ role: 'user', content: prompt }],
+        config: activeProvider,
+        customConfig: { temperature: 0.3 },
+      });
 
       res.json({
-        analysis: analysisText || buildFallbackAnalysis(ticker, bundle, preferences),
+        analysis: analysisResult.text || buildFallbackAnalysis(ticker, bundle, preferences),
         source: thirdPartyConfig ? 'third-party' : 'openai',
       });
     } catch (error: any) {
@@ -406,21 +434,24 @@ async function startServer() {
         return res.status(400).json({ error: "Base URL and API Key are required" });
       }
 
-      const reply = await generateWithThirdParty(
-        'Reply with exactly: CONNECTED',
-        thirdPartyConfig,
-        { temperature: 0 },
-      );
+      const result = await generateWithThirdParty({
+        messages: [{ role: 'user', content: 'Reply with exactly: CONNECTED' }],
+        config: thirdPartyConfig,
+      });
 
       res.json({
         ok: true,
         provider: maskModelLabel(thirdPartyConfig),
         requestUrl: normalizeChatCompletionsUrl(thirdPartyConfig.baseUrl),
-        preview: reply.slice(0, 120),
+        preview: result.text.slice(0, 120),
+        debug: result.debug,
       });
     } catch (error: any) {
       console.error("Error testing provider:", error);
-      res.status(500).json({ error: error.message || "Provider test failed" });
+      res.status(500).json({
+        error: error.message || "Provider test failed",
+        debug: error.debug,
+      });
     }
   });
 
