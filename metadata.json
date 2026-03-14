@@ -1,0 +1,5 @@
+{
+  "name": "Stock & Crypto Market Analyzer",
+  "description": "Real-time stock and crypto market analysis tool with AI-powered trading suggestions. Supports US stocks, HK stocks, A-shares, and cryptocurrencies.",
+  "requestFramePermissions": []
+}
