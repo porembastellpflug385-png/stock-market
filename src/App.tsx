@@ -108,6 +108,16 @@ const metricTone = (score: number) =>
   score >= 45 ? 'border-amber-300/20 bg-amber-300/10 text-amber-200' :
   'border-rose-400/20 bg-rose-400/10 text-rose-300';
 
+const readApiPayload = async (response: Response) => {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+};
+
 function App() {
   const [ticker, setTicker] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -168,7 +178,7 @@ function App() {
           headers: getLLMHeaders(),
         });
         if (res.ok) {
-          const data = await res.json();
+          const data = await readApiPayload(res);
           setSearchResults(data.slice(0, 8));
           setShowDropdown(true);
         }
@@ -222,7 +232,7 @@ function App() {
           headers: getLLMHeaders(),
         });
         if (res.ok) {
-          const data = await res.json();
+          const data = await readApiPayload(res);
           if (Array.isArray(data) && data[0]?.symbol) {
             symbolToUse = data[0].symbol;
           }
@@ -248,11 +258,11 @@ function App() {
         `/api/asset/${encodeURIComponent(formattedTicker)}?timeframe=${preferences.timeframe}`,
       );
       if (!assetRes.ok) {
-        const payload = await assetRes.json();
+        const payload = await readApiPayload(assetRes);
         throw new Error(payload.error || '获取行情失败');
       }
 
-      const payload = await assetRes.json();
+      const payload = await readApiPayload(assetRes);
       setQuote(payload.quote);
       setSeries(payload.series || []);
       setIndicators(payload.indicators || null);
@@ -279,11 +289,11 @@ function App() {
       });
 
       if (!res.ok) {
-        const payload = await res.json();
+        const payload = await readApiPayload(res);
         throw new Error(payload.error || 'AI 分析失败');
       }
 
-      const payload = await res.json();
+      const payload = await readApiPayload(res);
       setAnalysis(payload.analysis || '');
       setAnalysisSource(payload.source || null);
     } catch (analysisError: any) {
@@ -347,11 +357,11 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providerConfig }),
       });
-      const payload = await res.json();
+      const payload = await readApiPayload(res);
       if (!res.ok) {
         throw new Error(payload.error || '连接测试失败');
       }
-      setProviderTestStatus(`连接成功：${payload.provider}，返回 ${payload.preview}`);
+      setProviderTestStatus(`连接成功：${payload.provider}，请求 ${payload.requestUrl}，返回 ${payload.preview}`);
     } catch (testError: any) {
       setProviderTestStatus(`连接失败：${testError.message || '未知错误'}`);
     } finally {

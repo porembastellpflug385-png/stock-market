@@ -87,6 +87,7 @@ const generateWithThirdParty = async (
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Accept: 'application/json',
       Authorization: `Bearer ${config.apiKey}`,
     },
     body: JSON.stringify({
@@ -115,7 +116,7 @@ const generateWithThirdParty = async (
   try {
     payload = JSON.parse(responseText);
   } catch {
-    throw new Error(summarizeNonJsonResponse(responseText));
+    throw new Error(`${summarizeNonJsonResponse(responseText)} Request URL: ${requestUrl}`);
   }
 
   const text = getTextFromChatResponse(payload);
@@ -414,6 +415,7 @@ async function startServer() {
       res.json({
         ok: true,
         provider: maskModelLabel(thirdPartyConfig),
+        requestUrl: normalizeChatCompletionsUrl(thirdPartyConfig.baseUrl),
         preview: reply.slice(0, 120),
       });
     } catch (error: any) {
