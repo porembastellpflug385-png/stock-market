@@ -138,6 +138,21 @@ const normalizeSearchResults = (payload: any) => {
   return payload.filter((item) => item && typeof item.symbol === 'string').slice(0, 8);
 };
 
+const hasAssetPayloadShape = (payload: any) =>
+  payload &&
+  typeof payload === 'object' &&
+  payload.quote &&
+  typeof payload.quote === 'object' &&
+  typeof payload.quote.symbol === 'string' &&
+  Array.isArray(payload.series) &&
+  payload.indicators &&
+  typeof payload.indicators === 'object';
+
+const hasAnalysisPayloadShape = (payload: any) =>
+  payload &&
+  typeof payload === 'object' &&
+  typeof payload.analysis === 'string';
+
 const getProviderText = (payload: any) => {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
@@ -404,6 +419,14 @@ function App() {
       }
 
       const payload = await readApiPayload(assetRes);
+      if (!hasAssetPayloadShape(payload)) {
+        throw new Error(
+          getPayloadError(
+            payload,
+            '行情接口返回格式异常，可能部署时把 /api 请求重写到了首页，请检查 Vercel 路由配置。',
+          ),
+        );
+      }
       setQuote(payload.quote);
       setSeries(payload.series || []);
       setIndicators(payload.indicators || null);
@@ -470,6 +493,14 @@ function App() {
       }
 
       const payload = await readApiPayload(res);
+      if (!hasAnalysisPayloadShape(payload)) {
+        throw new Error(
+          getPayloadError(
+            payload,
+            'AI 分析接口返回格式异常，可能部署时把 /api 请求重写到了首页，请检查 Vercel 路由配置。',
+          ),
+        );
+      }
       setAnalysis(payload.analysis || '');
       setAnalysisSource(payload.source || null);
     } catch (analysisError: any) {
