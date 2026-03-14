@@ -7,17 +7,23 @@ import {
   timeframeMonths,
   type AnalysisPreferences,
   type RawChartPoint,
-} from "./src/lib/market-analysis";
+} from "./src/lib/market-analysis.ts";
 
 const yahooFinance = new YahooFinance();
-const defaultServerProvider =
-  process.env.OPENAI_API_KEY
-    ? {
-        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
-        apiKey: process.env.OPENAI_API_KEY,
-        model: process.env.OPENAI_MODEL || process.env.LLM_MODEL || 'gpt-4.1-mini',
-      }
-    : null;
+
+const API_CONFIG = {
+  key: "sk-12a7BPJym4RJSfqoVq5EHEEAs4ohQjIAZOA8QWVMNmFA0Fru",
+  baseUrl: "https://ai.scd666.com/v1/chat/completions",
+};
+
+const TEXT_MODEL = "deepseek-v3.2-exp";
+const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+
+const defaultServerProvider = {
+  baseUrl: API_CONFIG.baseUrl,
+  apiKey: API_CONFIG.key,
+  model: TEXT_MODEL,
+};
 
 type FallbackQuote = {
   symbol: string;
@@ -75,8 +81,7 @@ const extractThirdPartyConfig = (req: express.Request): ThirdPartyLLMConfig | nu
   const model = String(
     bodyConfig.model ||
       headerModel ||
-      defaultServerProvider?.model ||
-      'gpt-4.1-mini',
+      defaultServerProvider.model,
   ).trim();
 
   if (!baseUrl || !apiKey) return null;
@@ -390,10 +395,10 @@ export function createApp() {
       const quotes = results.quotes || [];
       const thirdPartyConfig = extractThirdPartyConfig(req);
 
-      if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query) && (thirdPartyConfig || defaultServerProvider)) {
+      if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query)) {
         const result = await generateWithThirdParty({
           messages: [{ role: 'user', content: `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.` }],
-          config: thirdPartyConfig || defaultServerProvider!,
+          config: thirdPartyConfig || defaultServerProvider,
         });
         const maybeTicker = result.text.trim().replace(/`/g, '');
         if (maybeTicker) {
@@ -477,14 +482,10 @@ export function createApp() {
 
       const bundle = await fetchMarketBundle(ticker, preferences.timeframe);
       const thirdPartyConfig = extractThirdPartyConfig(req);
-      if (!thirdPartyConfig && !defaultServerProvider) {
-        return res.json({ analysis: buildFallbackAnalysis(ticker, bundle, preferences), source: 'rules' });
-      }
-
       const prompt = buildPrompt(ticker, bundle, preferences);
       const result = await generateWithThirdParty({
         messages: [{ role: 'user', content: prompt }],
-        config: thirdPartyConfig || defaultServerProvider!,
+        config: thirdPartyConfig || defaultServerProvider,
         customConfig: { temperature: 0.3 },
       });
 

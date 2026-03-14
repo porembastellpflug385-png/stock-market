@@ -4,11 +4,9 @@ import {
   AlertCircle,
   BrainCircuit,
   Gauge,
-  KeyRound,
   Loader2,
   RefreshCw,
   Search,
-  Settings2,
   ShieldAlert,
   TrendingDown,
   TrendingUp,
@@ -260,16 +258,9 @@ function App() {
     return () => window.clearInterval(interval);
   }, [ticker, autoRefresh, preferences]);
 
-  const hasCustomProvider = Boolean(providerConfig.baseUrl.trim() && providerConfig.apiKey.trim());
+  const hasCustomProvider = false;
 
-  const getLLMHeaders = () =>
-    hasCustomProvider
-      ? {
-          'x-llm-base-url': providerConfig.baseUrl.trim(),
-          'x-llm-api-key': providerConfig.apiKey.trim(),
-          'x-llm-model': providerConfig.model.trim() || defaultProviderConfig.model,
-        }
-      : {};
+  const getLLMHeaders = () => ({});
 
   const callCustomProviderDirect = async (
     messages: Array<{ role: 'user' | 'system' | 'assistant'; content: string }>,
@@ -484,7 +475,7 @@ function App() {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: symbol, preferences, providerConfig }),
+        body: JSON.stringify({ ticker: symbol, preferences }),
       });
 
       if (!res.ok) {
@@ -698,14 +689,6 @@ function App() {
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowSettings(true)}
-                  className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
-                >
-                  <Settings2 className="h-4 w-4" />
-                  API 设置
-                </button>
-                <button
-                  type="button"
                   onClick={() => ticker && runWorkflow(ticker)}
                   disabled={!ticker || loading}
                   className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
@@ -740,8 +723,8 @@ function App() {
               />
               <InfoCard
                 title="分析模式"
-                value={analysisSource === 'third-party' ? '第三方模型' : analysisSource === 'openai' ? 'OpenAI 专业推理' : analysisSource === 'rules' ? '规则引擎' : '待生成'}
-                subtitle={hasCustomProvider ? '优先走自定义 Base URL + API Key' : '默认走服务端 OpenAI'}
+                value={analysisSource === 'third-party' ? '深度推理模型' : analysisSource === 'openai' ? 'OpenAI 专业推理' : analysisSource === 'rules' ? '规则引擎' : '待生成'}
+                subtitle="固定走服务端安全配置"
                 icon={<BrainCircuit className="h-4 w-4" />}
               />
               <InfoCard
@@ -1008,147 +991,6 @@ function App() {
         )}
       </main>
 
-      {showSettings && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-xl">
-          <div className="w-full max-w-xl rounded-[32px] border border-white/10 bg-slate-950/88 p-6 text-slate-100 shadow-2xl shadow-black/50 backdrop-blur-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-sky-300/15 bg-sky-200/10 px-3 py-1 text-xs font-semibold text-sky-200">
-                  <KeyRound className="h-3.5 w-3.5" />
-                  第三方 API 配置
-                </div>
-                <h3 className="mt-3 text-xl font-bold text-slate-50">配置 Base URL 和 API Key</h3>
-                <p className="mt-2 text-sm leading-6 text-slate-400">
-                  当前默认使用服务端 OpenAI。保存后，分析和中文名称兜底解析会优先走你配置的 OpenAI 兼容第三方接口。
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSettings(false)}
-                className="rounded-2xl border border-white/8 bg-white/5 px-3 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/10"
-              >
-                关闭
-              </button>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-300">Base URL</label>
-                <input
-                  value={providerConfig.baseUrl}
-                  onChange={(event) => changeProviderConfig('baseUrl', event.target.value)}
-                  placeholder="例如: https://api.openai.com/v1 或第三方网关"
-                  className="w-full rounded-2xl border border-white/8 bg-white/4 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-300/20 focus:bg-white/6 focus:ring-4 focus:ring-sky-300/10"
-                />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-300">API Key</label>
-                <input
-                  type="password"
-                  value={providerConfig.apiKey}
-                  onChange={(event) => changeProviderConfig('apiKey', event.target.value)}
-                  placeholder="输入第三方 API Key"
-                  className="w-full rounded-2xl border border-white/8 bg-white/4 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-300/20 focus:bg-white/6 focus:ring-4 focus:ring-sky-300/10"
-                />
-              </div>
-              <div>
-                <label className="mb-2 block text-sm font-semibold text-slate-300">Model</label>
-                <input
-                  value={providerConfig.model}
-                  onChange={(event) => changeProviderConfig('model', event.target.value)}
-                  placeholder="例如: gpt-4.1-mini"
-                  className="w-full rounded-2xl border border-white/8 bg-white/4 px-4 py-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-sky-300/20 focus:bg-white/6 focus:ring-4 focus:ring-sky-300/10"
-                />
-              </div>
-            </div>
-
-            <div className="mt-6 rounded-2xl border border-white/8 bg-white/4 p-4 text-sm leading-6 text-slate-400">
-              当前状态：{hasCustomProvider ? '已启用自定义第三方接口' : '未配置，将回退到服务端默认 OpenAI 或规则引擎'}。
-            </div>
-
-            <label className="mt-4 inline-flex items-center gap-2 text-sm font-medium text-slate-300">
-              <input
-                type="checkbox"
-                checked={debugMode}
-                onChange={(event) => setDebugMode(event.target.checked)}
-                className="h-4 w-4 rounded border-white/10 bg-transparent text-sky-300 focus:ring-sky-300"
-              />
-              启用调试模式
-            </label>
-
-            <div className="mt-4">
-              <div className="mb-2 text-sm font-semibold text-slate-300">测试通道</div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTestTransport('server')}
-                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${testTransport === 'server' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/8 bg-white/5 text-slate-300 hover:bg-white/10'}`}
-                >
-                  服务端转发
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTestTransport('browser')}
-                  className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${testTransport === 'browser' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/8 bg-white/5 text-slate-300 hover:bg-white/10'}`}
-                >
-                  浏览器直连
-                </button>
-              </div>
-              <div className="mt-2 text-xs leading-5 text-slate-500">
-                对于部分第三方网关，服务端转发会被上游拒绝，但浏览器直连可正常使用。当前自定义第三方分析默认按浏览器直连执行。
-              </div>
-            </div>
-
-            {providerTestStatus && (
-              <div className={`mt-4 rounded-2xl border p-4 text-sm leading-6 ${providerTestStatus.startsWith('连接成功') ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300' : 'border-rose-400/20 bg-rose-400/10 text-rose-300'}`}>
-                {providerTestStatus}
-              </div>
-            )}
-
-            {debugMode && providerDebugInfo && (
-              <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/60 p-4 text-xs leading-6 text-slate-300">
-                <div className="mb-2 font-semibold text-slate-100">调试信息</div>
-                <div><span className="text-slate-500">Request URL:</span> {providerDebugInfo.requestUrl || 'N/A'}</div>
-                <div><span className="text-slate-500">Response Status:</span> {providerDebugInfo.responseStatus ?? 'N/A'}</div>
-                <div><span className="text-slate-500">Content-Type:</span> {providerDebugInfo.responseContentType || 'N/A'}</div>
-                <div className="mt-3">
-                  <div className="mb-1 text-slate-500">Request Body Preview</div>
-                  <pre className="overflow-auto rounded-xl border border-white/6 bg-black/20 p-3 text-[11px] text-slate-300">{providerDebugInfo.requestBodyPreview || 'N/A'}</pre>
-                </div>
-                <div className="mt-3">
-                  <div className="mb-1 text-slate-500">Response Preview</div>
-                  <pre className="overflow-auto rounded-xl border border-white/6 bg-black/20 p-3 text-[11px] text-slate-300">{providerDebugInfo.responsePreview || 'N/A'}</pre>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-6 flex flex-wrap justify-end gap-2">
-              <button
-                type="button"
-                onClick={testProviderConnection}
-                disabled={testingProvider}
-                className="rounded-2xl border border-sky-300/15 bg-sky-200/10 px-4 py-2 text-sm font-semibold text-sky-200 transition hover:bg-sky-200/15 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {testingProvider ? '测试中...' : '测试连接'}
-              </button>
-              <button
-                type="button"
-                onClick={clearProviderConfig}
-                className="rounded-2xl border border-white/8 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-300 transition hover:bg-white/10"
-              >
-                清除已保存配置
-              </button>
-              <button
-                type="button"
-                onClick={saveProviderConfig}
-                className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white"
-              >
-                保存设置
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
