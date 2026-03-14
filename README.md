@@ -6,7 +6,7 @@
 - 技术指标计算：`SMA20`、`EMA20`、`EMA50`、`RSI14`、`MACD`、`Bollinger Bands`、`ATR14`
 - 多因子综合信号评分
 - 用户自定义分析维度、风险偏好、观察周期
-- 后端统一生成 AI 专业报告，避免前端暴露默认密钥
+- 后端默认使用 OpenAI 兼容接口生成 AI 专业报告，避免前端暴露默认密钥
 - 中文名称搜索的 AI 兜底解析
 - 首页可配置第三方 `Base URL / API Key / Model`，并保存到本地
 
@@ -21,8 +21,9 @@ npm install
 2. 可选：配置服务端默认环境变量 `.env.local` 或 `.env`
 
 ```bash
-GEMINI_API_KEY=your_key_here
-LLM_MODEL=gpt-4.1-mini
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-4.1-mini
 ```
 
 不配置也可以运行，系统会自动退化为规则引擎分析。

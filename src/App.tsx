@@ -124,7 +124,7 @@ function App() {
   const [series, setSeries] = useState<MarketPoint[]>([]);
   const [indicators, setIndicators] = useState<IndicatorSnapshot | null>(null);
   const [analysis, setAnalysis] = useState('');
-  const [analysisSource, setAnalysisSource] = useState<'gemini' | 'rules' | 'third-party' | null>(null);
+  const [analysisSource, setAnalysisSource] = useState<'openai' | 'rules' | 'third-party' | null>(null);
 
   const [preferences, setPreferences] = useState<AnalysisPreferences>(defaultPreferences);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -499,8 +499,8 @@ function App() {
               />
               <InfoCard
                 title="分析模式"
-                value={analysisSource === 'third-party' ? '第三方模型' : analysisSource === 'gemini' ? 'Gemini 专业推理' : analysisSource === 'rules' ? '规则引擎' : '待生成'}
-                subtitle={hasCustomProvider ? '优先走自定义 Base URL + API Key' : '后端统一分析链路'}
+                value={analysisSource === 'third-party' ? '第三方模型' : analysisSource === 'openai' ? 'OpenAI 专业推理' : analysisSource === 'rules' ? '规则引擎' : '待生成'}
+                subtitle={hasCustomProvider ? '优先走自定义 Base URL + API Key' : '默认走服务端 OpenAI'}
                 icon={<BrainCircuit className="h-4 w-4" />}
               />
               <InfoCard
@@ -750,7 +750,7 @@ function App() {
                 ) : analysis ? (
                   <div className="mt-6 rounded-[28px] border border-white/8 bg-slate-950/55 p-5 shadow-inner shadow-black/20">
                     <div className="mb-3 inline-flex rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400 shadow-sm">
-                      {analysisSource === 'third-party' ? '第三方接口输出' : analysisSource === 'gemini' ? 'Gemini 推理输出' : analysisSource === 'rules' ? '规则引擎输出' : '分析结果'}
+                      {analysisSource === 'third-party' ? '第三方接口输出' : analysisSource === 'openai' ? 'OpenAI 推理输出' : analysisSource === 'rules' ? '规则引擎输出' : '分析结果'}
                     </div>
                     <div className="max-h-[680px] overflow-auto pr-1">
                       {renderAnalysis(analysis)}
@@ -778,7 +778,7 @@ function App() {
                 </div>
                 <h3 className="mt-3 text-xl font-bold text-slate-50">配置 Base URL 和 API Key</h3>
                 <p className="mt-2 text-sm leading-6 text-slate-400">
-                  当前默认使用服务端 Gemini。保存后，分析和中文名称兜底解析会优先走你配置的 OpenAI 兼容第三方接口。
+                  当前默认使用服务端 OpenAI。保存后，分析和中文名称兜底解析会优先走你配置的 OpenAI 兼容第三方接口。
                 </p>
               </div>
               <button
@@ -822,7 +822,7 @@ function App() {
             </div>
 
             <div className="mt-6 rounded-2xl border border-white/8 bg-white/4 p-4 text-sm leading-6 text-slate-400">
-              当前状态：{hasCustomProvider ? '已启用自定义第三方接口' : '未配置，将回退到服务端默认 Gemini 或规则引擎'}。
+              当前状态：{hasCustomProvider ? '已启用自定义第三方接口' : '未配置，将回退到服务端默认 OpenAI 或规则引擎'}。
             </div>
 
             {providerTestStatus && (

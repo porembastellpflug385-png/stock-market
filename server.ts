@@ -3,7 +3,6 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import YahooFinance from "yahoo-finance2";
-import { GoogleGenAI } from "@google/genai";
 import {
   createAnalysisPacket,
   defaultPreferences,
@@ -13,10 +12,14 @@ import {
 } from "./src/lib/market-analysis";
 
 const yahooFinance = new YahooFinance();
-const ai = process.env.GEMINI_API_KEY
-  ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-  : null;
-const defaultThirdPartyModel = process.env.LLM_MODEL || 'gpt-4.1-mini';
+const defaultServerProvider =
+  process.env.OPENAI_API_KEY
+    ? {
+        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
+        apiKey: process.env.OPENAI_API_KEY,
+        model: process.env.OPENAI_MODEL || process.env.LLM_MODEL || 'gpt-4.1-mini',
+      }
+    : null;
 
 type ThirdPartyLLMConfig = {
   baseUrl: string;
@@ -39,7 +42,12 @@ const extractThirdPartyConfig = (req: express.Request): ThirdPartyLLMConfig | nu
 
   const baseUrl = String(bodyConfig.baseUrl || headerBaseUrl || '').trim();
   const apiKey = String(bodyConfig.apiKey || headerApiKey || '').trim();
-  const model = String(bodyConfig.model || headerModel || defaultThirdPartyModel).trim();
+  const model = String(
+    bodyConfig.model ||
+    headerModel ||
+    defaultServerProvider?.model ||
+    'gpt-4.1-mini',
+  ).trim();
 
   if (!baseUrl || !apiKey) return null;
   return { baseUrl, apiKey, model };
@@ -61,12 +69,21 @@ const getTextFromChatResponse = (payload: any) => {
   return '';
 };
 
+const summarizeNonJsonResponse = (text: string) => {
+  const clean = text.replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (/<!doctype html>|<html|<body/i.test(text) || /^The page/i.test(clean)) {
+    return `Endpoint returned HTML/text instead of OpenAI JSON. Base URL is likely pointing at a website page, not an API root. Response preview: ${clean}`;
+  }
+  return `Endpoint did not return valid JSON. Response preview: ${clean}`;
+};
+
 const generateWithThirdParty = async (
   prompt: string,
   config: ThirdPartyLLMConfig,
   options?: { temperature?: number },
 ) => {
-  const response = await fetch(normalizeChatCompletionsUrl(config.baseUrl), {
+  const requestUrl = normalizeChatCompletionsUrl(config.baseUrl);
+  const response = await fetch(requestUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -88,12 +105,19 @@ const generateWithThirdParty = async (
     }),
   });
 
+  const responseText = await response.text();
+
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Third-party LLM request failed: ${response.status} ${errorText}`);
+    throw new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`);
   }
 
-  const payload = await response.json();
+  let payload: any;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    throw new Error(summarizeNonJsonResponse(responseText));
+  }
+
   const text = getTextFromChatResponse(payload);
   if (!text) {
     throw new Error('Third-party LLM returned empty content');
@@ -165,7 +189,7 @@ const buildFallbackAnalysis = (ticker: string, bundle: Awaited<ReturnType<typeof
     `- 用户自定义关注：${focus}`,
     `- 若价格有效站稳 EMA20 且 MACD 柱线继续扩张，可考虑顺势跟踪。`,
     `- 若跌破支撑位并伴随放量，优先控制仓位并等待结构修复。`,
-    `- 由于未启用 Gemini 密钥，以上为基于技术指标的规则化分析。`,
+    `- 由于未启用服务端 OpenAI 配置，以上为基于技术指标的规则化分析。`,
   ].join('\n');
 };
 
@@ -242,14 +266,13 @@ async function startServer() {
       const quotes = results.quotes || [];
       const thirdPartyConfig = extractThirdPartyConfig(req);
 
-      if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query) && (thirdPartyConfig || ai)) {
+      if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query) && (thirdPartyConfig || defaultServerProvider)) {
         const tickerResolvePrompt = `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.`;
-        const maybeTicker = thirdPartyConfig
-          ? (await generateWithThirdParty(tickerResolvePrompt, thirdPartyConfig, { temperature: 0 })).trim().replace(/`/g, '')
-          : (await ai!.models.generateContent({
-              model: 'gemini-2.5-flash',
-              contents: tickerResolvePrompt,
-            })).text?.trim().replace(/`/g, '');
+        const maybeTicker = (await generateWithThirdParty(
+          tickerResolvePrompt,
+          thirdPartyConfig || defaultServerProvider!,
+          { temperature: 0 },
+        )).trim().replace(/`/g, '');
         if (maybeTicker) {
           try {
             const fallbackQuote = await yahooFinance.quote(maybeTicker);
@@ -354,21 +377,17 @@ async function startServer() {
 
       const bundle = await fetchMarketBundle(ticker, preferences.timeframe);
       const thirdPartyConfig = extractThirdPartyConfig(req);
-      if (!thirdPartyConfig && !ai) {
+      if (!thirdPartyConfig && !defaultServerProvider) {
         return res.json({ analysis: buildFallbackAnalysis(ticker, bundle, preferences), source: 'rules' });
       }
 
       const prompt = buildPrompt(ticker, bundle, preferences);
-      const analysisText = thirdPartyConfig
-        ? await generateWithThirdParty(prompt, thirdPartyConfig, { temperature: 0.3 })
-        : (await ai!.models.generateContent({
-            model: 'gemini-2.5-pro',
-            contents: prompt,
-          })).text;
+      const activeProvider = thirdPartyConfig || defaultServerProvider!;
+      const analysisText = await generateWithThirdParty(prompt, activeProvider, { temperature: 0.3 });
 
       res.json({
         analysis: analysisText || buildFallbackAnalysis(ticker, bundle, preferences),
-        source: thirdPartyConfig ? 'third-party' : 'gemini',
+        source: thirdPartyConfig ? 'third-party' : 'openai',
       });
     } catch (error: any) {
       console.error("Error generating analysis:", error);
