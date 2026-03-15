@@ -1504,6 +1504,9 @@ function App() {
       }
 
       const refinements = Array.isArray(payload.refined) ? payload.refined : [];
+      if (payload.degraded) {
+        setScannerError('AI 上游繁忙，本次展示的是规则降级精筛结果；系统已经实际触发过 AI 请求并自动回退。');
+      }
       setScannerRefinements(refinements);
       if (scannerSnapshots.length > 0) {
         const nextSnapshots = scannerSnapshots.map((snapshot, index) =>
@@ -1550,16 +1553,21 @@ function App() {
         return;
       }
 
-      const verifiedAsset = await verifyTrackingAsset(nextSymbol);
-      const verifiedQuote = verifiedAsset.quote as Quote;
+      let verifiedQuote: Quote | null = null;
+      try {
+        const verifiedAsset = await verifyTrackingAsset(nextSymbol);
+        verifiedQuote = verifiedAsset.quote as Quote;
+      } catch (verificationError: any) {
+        setTrackingError(`已加入关注池，但行情预检失败：${verificationError.message || '未知错误'}`);
+      }
 
       const overview = normalizeTrackingOverview({
         ...current,
         watchlist: [
           {
             symbol: nextSymbol,
-            name: metadata?.name || verifiedQuote.shortName || verifiedQuote.longName || nextSymbol,
-            market: metadata?.market || verifiedQuote.exchange || inferTrackingMarket(nextSymbol),
+            name: metadata?.name || verifiedQuote?.shortName || verifiedQuote?.longName || nextSymbol,
+            market: metadata?.market || verifiedQuote?.exchange || inferTrackingMarket(nextSymbol),
             assetClass: metadata?.assetClass || inferTrackingAssetClass(nextSymbol),
             tags: [],
             priority: 0,

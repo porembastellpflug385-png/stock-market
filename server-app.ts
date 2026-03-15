@@ -291,6 +291,8 @@ const buildRuleBasedRefinements = (candidates: any[]) =>
     .filter((item) => item.symbol)
     .sort((left, right) => right.aiScore - left.aiScore);
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const generateWithThirdParty = async ({
   messages,
   config,
@@ -311,43 +313,55 @@ const generateWithThirdParty = async ({
     requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
   };
 
-  const response = await fetch(requestUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${config.apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  let lastError: (Error & { debug?: ThirdPartyDebug }) | null = null;
 
-  const responseText = await response.text();
-  debug.responseStatus = response.status;
-  debug.responseContentType = response.headers.get('content-type');
-  debug.responsePreview = responseText.slice(0, 600);
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const response = await fetch(requestUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!response.ok) {
-    const error = new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`) as Error & { debug?: ThirdPartyDebug };
-    error.debug = debug;
-    throw error;
+    const responseText = await response.text();
+    debug.responseStatus = response.status;
+    debug.responseContentType = response.headers.get('content-type');
+    debug.responsePreview = responseText.slice(0, 600);
+
+    if (!response.ok) {
+      const error = new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`) as Error & { debug?: ThirdPartyDebug };
+      error.debug = debug;
+      lastError = error;
+      const retryable = response.status === 429 || /upstream_error|负载已饱和/i.test(responseText);
+      if (retryable && attempt < 3) {
+        await sleep(500 * attempt);
+        continue;
+      }
+      throw error;
+    }
+
+    let payload: any;
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      const error = new Error(`${summarizeNonJsonResponse(responseText)} Request URL: ${requestUrl}`) as Error & { debug?: ThirdPartyDebug };
+      error.debug = debug;
+      throw error;
+    }
+
+    const text = getTextFromChatResponse(payload);
+    if (!text) {
+      const error = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
+      error.debug = debug;
+      throw error;
+    }
+    return { text, debug };
   }
 
-  let payload: any;
-  try {
-    payload = JSON.parse(responseText);
-  } catch {
-    const error = new Error(`${summarizeNonJsonResponse(responseText)} Request URL: ${requestUrl}`) as Error & { debug?: ThirdPartyDebug };
-    error.debug = debug;
-    throw error;
-  }
-
-  const text = getTextFromChatResponse(payload);
-  if (!text) {
-    const error = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
-    error.debug = debug;
-    throw error;
-  }
-  return { text, debug };
+  throw lastError || new Error('Third-party LLM request failed');
 };
 
 const maskModelLabel = (config: ThirdPartyLLMConfig) =>
