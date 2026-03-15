@@ -139,7 +139,18 @@ type RunTrackingCycleOptions = {
   generateAnalysis: (symbol: string, bundle: { quote: TrackingReportRecord['quote']; packet: AnalysisPacket }) => Promise<string>;
 };
 
-const dataDir = path.join(process.cwd(), 'data');
+const resolveDataDir = () => {
+  const configuredDir = process.env.TRACKING_DATA_DIR?.trim();
+  if (configuredDir) return configuredDir;
+
+  const cwd = process.cwd();
+  const vercelRuntime = process.env.VERCEL === '1' || cwd.startsWith('/var/task');
+  if (vercelRuntime) return path.join('/tmp', 'market-analyzer-tracking');
+
+  return path.join(cwd, 'data');
+};
+
+const dataDir = resolveDataDir();
 const dataFile = path.join(dataDir, 'tracking-system.json');
 
 const strategyProfiles: StrategyProfile[] = [
