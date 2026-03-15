@@ -7,7 +7,7 @@ import {
   timeframeMonths,
   type AnalysisPreferences,
   type RawChartPoint,
-} from "./src/lib/market-analysis.ts";
+} from "./src/lib/market-analysis.js";
 
 const yahooFinance = new YahooFinance();
 
