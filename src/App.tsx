@@ -345,31 +345,51 @@ const createReportHtml = ({
         <style>
           :root {
             color-scheme: light;
-            --bg: #eef4f9;
-            --card: rgba(255,255,255,0.94);
+            --bg: #edf3f8;
+            --paper: #f7fafc;
+            --card: rgba(255,255,255,0.96);
             --ink: #0f172a;
-            --muted: #526179;
-            --line: rgba(15,23,42,0.08);
-            --accent: #0f766e;
-            --accent-soft: rgba(15,118,110,0.10);
+            --muted: #5f6f86;
+            --line: rgba(15,23,42,0.07);
+            --line-strong: rgba(15,23,42,0.11);
+            --accent: #125d76;
+            --accent-soft: rgba(18,93,118,0.10);
+            --accent-glow: rgba(56,189,248,0.10);
           }
           * { box-sizing: border-box; }
           body {
             margin: 0;
-            background: linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
+            background:
+              radial-gradient(circle at top right, var(--accent-glow), transparent 28%),
+              linear-gradient(180deg, #f9fbfd 0%, var(--bg) 100%);
             color: var(--ink);
             font-family: "SF Pro Display","PingFang SC","Helvetica Neue",Arial,sans-serif;
           }
-          .page { width: 980px; margin: 0 auto; padding: 40px 24px 64px; }
+          .page {
+            width: 860px;
+            margin: 0 auto;
+            padding: 56px 0 80px;
+          }
+          .sheet {
+            background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,252,255,0.96));
+            border: 1px solid var(--line);
+            border-radius: 32px;
+            box-shadow:
+              0 28px 80px rgba(15,23,42,0.08),
+              inset 0 1px 0 rgba(255,255,255,0.9);
+            padding: 34px 34px 42px;
+          }
           .hero, .card {
             background: var(--card);
             border: 1px solid var(--line);
-            border-radius: 28px;
-            box-shadow: 0 24px 60px rgba(15,23,42,0.08);
+            border-radius: 24px;
+            box-shadow: 0 18px 44px rgba(15,23,42,0.05);
           }
           .hero {
-            padding: 28px;
-            background-image: radial-gradient(circle at top right, rgba(56,189,248,0.12), transparent 36%);
+            padding: 30px;
+            background-image:
+              radial-gradient(circle at top right, rgba(56,189,248,0.10), transparent 34%),
+              linear-gradient(180deg, rgba(248,250,252,0.94), rgba(255,255,255,0.98));
           }
           .eyebrow {
             font-size: 12px;
@@ -378,19 +398,28 @@ const createReportHtml = ({
             color: var(--muted);
             font-weight: 700;
           }
-          h1 { margin: 14px 0 8px; font-size: 34px; line-height: 1.05; }
-          .sub { color: var(--muted); font-size: 14px; line-height: 1.7; }
+          h1 {
+            margin: 14px 0 10px;
+            font-size: 34px;
+            line-height: 1.06;
+            letter-spacing: -0.03em;
+          }
+          .sub {
+            color: var(--muted);
+            font-size: 13px;
+            line-height: 1.8;
+          }
           .hero-grid, .metric-grid { display: grid; gap: 14px; }
-          .hero-grid { grid-template-columns: 1.4fr 0.8fr; margin-top: 24px; }
+          .hero-grid { grid-template-columns: 1.25fr 0.75fr; margin-top: 26px; }
           .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 18px; }
           .metric, .panel {
-            border: 1px solid var(--line);
-            border-radius: 22px;
+            border: 1px solid var(--line-strong);
+            border-radius: 20px;
             background: rgba(255,255,255,0.88);
             padding: 16px 18px;
           }
           .metric-label, .panel-label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-          .metric-value { font-size: 22px; font-weight: 700; }
+          .metric-value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
           .score {
             display: inline-flex;
             align-items: center;
@@ -401,43 +430,74 @@ const createReportHtml = ({
             font-weight: 700;
             margin-bottom: 14px;
           }
-          .card { padding: 24px; margin-top: 18px; }
-          h2 { font-size: 20px; margin: 20px 0 10px; }
-          h3 { font-size: 16px; margin: 16px 0 8px; }
-          p, li { color: #334155; font-size: 14px; line-height: 1.8; }
-          .report-spacer { height: 10px; }
+          .card {
+            padding: 28px 30px 34px;
+            margin-top: 20px;
+          }
+          .article {
+            max-width: 720px;
+            margin: 0 auto;
+          }
+          h2 {
+            font-size: 22px;
+            margin: 32px 0 14px;
+            letter-spacing: -0.02em;
+          }
+          h3 {
+            font-size: 17px;
+            margin: 20px 0 10px;
+            color: #13233b;
+          }
+          p, li {
+            color: #334155;
+            font-size: 15px;
+            line-height: 1.95;
+          }
+          p { margin: 0 0 12px; }
+          li { margin: 0 0 6px 18px; }
+          .report-spacer { height: 14px; }
+          .section-rule {
+            height: 1px;
+            margin: 24px 0 8px;
+            background: linear-gradient(90deg, rgba(15,23,42,0.12), rgba(15,23,42,0.03));
+          }
         </style>
       </head>
       <body>
         <div class="page">
-          <section class="hero">
-            <div class="eyebrow">Institutional Market Report</div>
-            <h1>${escapeHtml(quote.shortName || quote.longName || ticker)}</h1>
-            <div class="sub">代码：${escapeHtml(ticker)} · 生成时间：${escapeHtml(generatedAt)} · 周期：${escapeHtml(timeframeOptions.find((item) => item.value === preferences.timeframe)?.label || preferences.timeframe)}</div>
-            <div class="hero-grid">
-              <div class="panel">
-                <div class="panel-label">市场快照</div>
-                <div class="metric-value">${escapeHtml(formatNumber(quote.regularMarketPrice))} ${escapeHtml(quote.currency || '')}</div>
-                <p>当日涨跌 ${escapeHtml(formatNumber(quote.regularMarketChange))} (${escapeHtml(formatNumber(quote.regularMarketChangePercent))}%)</p>
-                <p>交易所 ${escapeHtml(quote.exchange || 'N/A')} · 风险偏好 ${escapeHtml(riskOptions.find((item) => item.value === preferences.riskProfile)?.label || preferences.riskProfile)}</p>
+          <div class="sheet">
+            <section class="hero">
+              <div class="eyebrow">Institutional Market Report</div>
+              <h1>${escapeHtml(quote.shortName || quote.longName || ticker)}</h1>
+              <div class="sub">代码：${escapeHtml(ticker)} · 生成时间：${escapeHtml(generatedAt)} · 周期：${escapeHtml(timeframeOptions.find((item) => item.value === preferences.timeframe)?.label || preferences.timeframe)}</div>
+              <div class="hero-grid">
+                <div class="panel">
+                  <div class="panel-label">市场快照</div>
+                  <div class="metric-value">${escapeHtml(formatNumber(quote.regularMarketPrice))} ${escapeHtml(quote.currency || '')}</div>
+                  <p>当日涨跌 ${escapeHtml(formatNumber(quote.regularMarketChange))} (${escapeHtml(formatNumber(quote.regularMarketChangePercent))}%)</p>
+                  <p>交易所 ${escapeHtml(quote.exchange || 'N/A')} · 风险偏好 ${escapeHtml(riskOptions.find((item) => item.value === preferences.riskProfile)?.label || preferences.riskProfile)}</p>
+                </div>
+                <div class="panel">
+                  <div class="panel-label">综合信号</div>
+                  <div class="score">${escapeHtml(String(indicators.signalScore))}/100 · ${escapeHtml(indicators.signalLabel)}</div>
+                  <p>${escapeHtml(indicators.rationale.join('； '))}</p>
+                </div>
               </div>
-              <div class="panel">
-                <div class="panel-label">综合信号</div>
-                <div class="score">${escapeHtml(String(indicators.signalScore))}/100 · ${escapeHtml(indicators.signalLabel)}</div>
-                <p>${escapeHtml(indicators.rationale.join('； '))}</p>
+              <div class="metric-grid">
+                <div class="metric"><div class="metric-label">趋势</div><div class="metric-value">${escapeHtml(indicators.trend.regime)}</div></div>
+                <div class="metric"><div class="metric-label">RSI14</div><div class="metric-value">${escapeHtml(formatNumber(indicators.momentum.rsi14))}</div></div>
+                <div class="metric"><div class="metric-label">MACD</div><div class="metric-value">${escapeHtml(formatNumber(indicators.momentum.macd))}</div></div>
+                <div class="metric"><div class="metric-label">支撑 / 阻力</div><div class="metric-value">${escapeHtml(formatNumber(indicators.supportResistance.support))} / ${escapeHtml(formatNumber(indicators.supportResistance.resistance))}</div></div>
               </div>
-            </div>
-            <div class="metric-grid">
-              <div class="metric"><div class="metric-label">趋势</div><div class="metric-value">${escapeHtml(indicators.trend.regime)}</div></div>
-              <div class="metric"><div class="metric-label">RSI14</div><div class="metric-value">${escapeHtml(formatNumber(indicators.momentum.rsi14))}</div></div>
-              <div class="metric"><div class="metric-label">MACD</div><div class="metric-value">${escapeHtml(formatNumber(indicators.momentum.macd))}</div></div>
-              <div class="metric"><div class="metric-label">支撑 / 阻力</div><div class="metric-value">${escapeHtml(formatNumber(indicators.supportResistance.support))} / ${escapeHtml(formatNumber(indicators.supportResistance.resistance))}</div></div>
-            </div>
-          </section>
-          <section class="card">
-            <div class="eyebrow">AI Analysis</div>
-            ${reportBlockHtml(analysis)}
-          </section>
+            </section>
+            <section class="card">
+              <div class="article">
+                <div class="eyebrow">AI Analysis</div>
+                <div class="section-rule"></div>
+                ${reportBlockHtml(analysis)}
+              </div>
+            </section>
+          </div>
         </div>
       </body>
     </html>
@@ -461,7 +521,7 @@ const createPdfReport = async ({
   reportRoot.style.position = 'fixed';
   reportRoot.style.left = '-99999px';
   reportRoot.style.top = '0';
-  reportRoot.style.width = '980px';
+  reportRoot.style.width = '860px';
   reportRoot.style.background = '#eef4f9';
   reportRoot.style.zIndex = '-1';
   reportRoot.innerHTML = createReportHtml({ ticker, quote, indicators, preferences, analysis });
@@ -484,19 +544,23 @@ const createPdfReport = async ({
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    const imgWidth = pageWidth;
+    const marginX = 28;
+    const marginY = 28;
+    const usableWidth = pageWidth - marginX * 2;
+    const usableHeight = pageHeight - marginY * 2;
+    const imgWidth = usableWidth;
     const imgHeight = (canvas.height * imgWidth) / canvas.width;
     let heightLeft = imgHeight;
-    let position = 0;
+    let position = marginY;
 
-    doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-    heightLeft -= pageHeight;
+    doc.addImage(imgData, 'PNG', marginX, position, imgWidth, imgHeight, undefined, 'FAST');
+    heightLeft -= usableHeight;
 
     while (heightLeft > 0) {
-      position = heightLeft - imgHeight;
       doc.addPage();
-      doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
-      heightLeft -= pageHeight;
+      position = marginY + (heightLeft - imgHeight);
+      doc.addImage(imgData, 'PNG', marginX, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= usableHeight;
     }
 
     doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
