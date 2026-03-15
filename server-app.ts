@@ -2,8 +2,16 @@ import 'dotenv/config';
 import express from "express";
 import YahooFinance from "yahoo-finance2";
 import {
+  evaluateScannerTemplate,
+  getScannerUniverse,
+  scannerTemplates,
+  type ScannerMarket,
+  type ScannerTemplateId,
+} from "./market-scanner.js";
+import {
   addWatchlistAsset,
   listTrackingOverview,
+  normalizeTrackingState,
   removeWatchlistAsset,
   runTrackingCycle,
   setWatchlistPriority,
@@ -219,6 +227,41 @@ const summarizeNonJsonResponse = (text: string) => {
     return `Endpoint returned HTML/text instead of OpenAI JSON. Base URL is likely pointing at a website page, not an API root. Response preview: ${clean}`;
   }
   return `Endpoint did not return valid JSON. Response preview: ${clean}`;
+};
+
+const tryParseJsonFragment = (text: string) => {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const arrayStart = trimmed.indexOf('[');
+    const arrayEnd = trimmed.lastIndexOf(']');
+    if (arrayStart !== -1 && arrayEnd > arrayStart) {
+      return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
+    }
+    const objectStart = trimmed.indexOf('{');
+    const objectEnd = trimmed.lastIndexOf('}');
+    if (objectStart !== -1 && objectEnd > objectStart) {
+      return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
+    }
+    throw new Error('Failed to parse JSON fragment from model output');
+  }
+};
+
+const summarizeValidationGroup = (items: Array<{ returnPct: number; drawdownPct: number }>) => {
+  if (items.length === 0) {
+    return { count: 0, winRate: 0, avgReturn: 0, avgDrawdown: 0, riskReward: 0 };
+  }
+
+  const avgReturn = items.reduce((sum, item) => sum + item.returnPct, 0) / items.length;
+  const avgDrawdown = items.reduce((sum, item) => sum + Math.abs(item.drawdownPct), 0) / items.length;
+  return {
+    count: items.length,
+    winRate: Math.round((items.filter((item) => item.returnPct > 0).length / items.length) * 100),
+    avgReturn: Number(avgReturn.toFixed(2)),
+    avgDrawdown: Number(avgDrawdown.toFixed(2)),
+    riskReward: Number((avgReturn / Math.max(avgDrawdown, 0.01)).toFixed(2)),
+  };
 };
 
 const generateWithThirdParty = async ({
@@ -504,12 +547,16 @@ const generateInstitutionalAnalysis = async (
   return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
 };
 
-const runTrackingWorkflow = async (scope: ReportScope, trigger: 'manual' | 'cron' = 'manual') => {
+const runTrackingWorkflow = async (
+  scope: ReportScope,
+  trigger: 'manual' | 'cron' = 'manual',
+  providedState?: ReturnType<typeof normalizeTrackingState>,
+) => {
   const preferences: AnalysisPreferences = {
     ...defaultPreferences,
     timeframe: '6mo',
   };
-  const overview = listTrackingOverview();
+  const overview = providedState || listTrackingOverview();
   const maxAiAssets = Number(process.env.TRACKING_AI_MAX_ASSETS || 6);
   const prioritizedSymbols = overview.watchlist
     .filter((item) => item.priority > 0 || item.tags.includes('重点'))
@@ -521,6 +568,8 @@ const runTrackingWorkflow = async (scope: ReportScope, trigger: 'manual' | 'cron
   return runTrackingCycle({
     scope,
     trigger,
+    initialState: overview,
+    persist: !providedState,
     fetchAsset: async (symbol) => {
       const bundle = await fetchMarketBundle(symbol, preferences.timeframe);
       return {
@@ -546,6 +595,27 @@ const runTrackingWorkflow = async (scope: ReportScope, trigger: 'manual' | 'cron
     },
   });
 };
+
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+) => {
+  const results: R[] = [];
+  for (let index = 0; index < items.length; index += limit) {
+    const batch = items.slice(index, index + limit);
+    const settled = await Promise.allSettled(batch.map(worker));
+    settled.forEach((entry) => {
+      if (entry.status === 'fulfilled') {
+        results.push(entry.value);
+      }
+    });
+  }
+  return results;
+};
+
+const daysBetween = (from: string, to = new Date().toISOString()) =>
+  Math.max(0, (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24));
 
 const isCronAuthorized = (req: express.Request) => {
   const cronSecret = process.env.CRON_SECRET;
@@ -707,6 +777,244 @@ export function createApp() {
     }
   });
 
+  app.get("/api/scanner/templates", (_req, res) => {
+    res.json({
+      templates: scannerTemplates,
+      markets: ['US', 'CN', 'HK', 'ETF', 'CRYPTO'],
+      universeSize: getScannerUniverse().length,
+    });
+  });
+
+  app.post("/api/scanner/run", async (req, res) => {
+    try {
+      const templateId = String(req.body?.templateId || 'trend-follow') as ScannerTemplateId;
+      const limit = Math.max(5, Math.min(30, Number(req.body?.limit || 12)));
+      const requestedMarkets = Array.isArray(req.body?.markets)
+        ? req.body.markets.map((item: unknown) => String(item).toUpperCase())
+        : [];
+      const markets = requestedMarkets.filter((item): item is ScannerMarket =>
+        ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
+      );
+
+      const universe = getScannerUniverse(markets);
+      const results = await runWithConcurrency(universe, 5, async (asset) => {
+        const bundle = await fetchMarketBundle(asset.symbol, '6mo');
+        return evaluateScannerTemplate(templateId, asset, bundle.packet, {
+          regularMarketPrice: bundle.quote.regularMarketPrice,
+          regularMarketChangePercent: bundle.quote.regularMarketChangePercent,
+        });
+      });
+
+      const candidates = results
+        .filter((item): item is NonNullable<typeof item> => Boolean(item))
+        .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
+        .slice(0, limit);
+
+      res.json({
+        template: scannerTemplates.find((item) => item.id === templateId) || scannerTemplates[3],
+        markets: markets.length ? markets : ['US', 'CN', 'HK', 'ETF', 'CRYPTO'],
+        scanned: universe.length,
+        candidates,
+      });
+    } catch (error: any) {
+      console.error("Error running scanner:", error);
+      res.status(500).json({ error: error.message || "Failed to run market scanner" });
+    }
+  });
+
+  app.post("/api/scanner/refine", async (req, res) => {
+    try {
+      const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 20) : [];
+      if (candidates.length === 0) {
+        return res.status(400).json({ error: "Candidates are required" });
+      }
+
+      const topN = Math.max(1, Math.min(10, Number(req.body?.topN || 6)));
+      const prompt = [
+        '你是一名机构级投资研究主管，请对下面规则扫描选出的候选标的做二次精筛。',
+        '请只输出 JSON 数组，不要输出 Markdown、解释或代码块。',
+        '每个对象必须包含字段：symbol, aiScore, conviction, recommendation, shouldPromote, summary, risks。',
+        '字段要求：',
+        '- aiScore: 0-100 的整数',
+        '- conviction: 只能是 high / medium / low',
+        '- recommendation: 只能是 focus / watch / skip',
+        '- shouldPromote: 布尔值，表示是否值得进入重点候选',
+        '- summary: 一句中文判断',
+        '- risks: 中文字符串数组，最多 3 条',
+        `请从下面候选中精筛出最值得关注的前 ${topN} 个，其余也要给出评估。`,
+        '',
+        JSON.stringify(candidates, null, 2),
+      ].join('\n');
+
+      const result = await generateWithThirdParty({
+        messages: [{ role: 'user', content: prompt }],
+        config: defaultServerProvider,
+        customConfig: { temperature: 0.2 },
+      });
+
+      const parsed = tryParseJsonFragment(result.text);
+      if (!Array.isArray(parsed)) {
+        throw new Error('Model did not return an array');
+      }
+
+      const refined = parsed
+        .filter((item) => item && typeof item.symbol === 'string')
+        .map((item) => ({
+          symbol: String(item.symbol).toUpperCase(),
+          aiScore: Math.max(0, Math.min(100, Number(item.aiScore || 0))),
+          conviction:
+            item.conviction === 'high' || item.conviction === 'low' ? item.conviction : 'medium',
+          recommendation:
+            item.recommendation === 'focus' || item.recommendation === 'skip' ? item.recommendation : 'watch',
+          shouldPromote: Boolean(item.shouldPromote),
+          summary: String(item.summary || ''),
+          risks: Array.isArray(item.risks) ? item.risks.slice(0, 3).map((risk) => String(risk)) : [],
+        }))
+        .sort((left, right) => right.aiScore - left.aiScore);
+
+      res.json({
+        refined,
+        topN,
+        model: defaultServerProvider.model,
+      });
+    } catch (error: any) {
+      console.error("Error refining scanner candidates:", error);
+      res.status(500).json({ error: error.message || "Failed to refine scanner candidates" });
+    }
+  });
+
+  app.post("/api/scanner/validate", async (req, res) => {
+    try {
+      const snapshots = Array.isArray(req.body?.snapshots) ? req.body.snapshots.slice(0, 30) : [];
+      if (snapshots.length === 0) {
+        return res.json({ snapshots: [], summary: null });
+      }
+
+      const buildWindowReturn = (
+        history: Array<{ date: string | Date; close?: number }>,
+        scannedAt: string,
+        entryPrice: number,
+        targetDays: number,
+      ) => {
+        const scannedAtMs = new Date(scannedAt).getTime();
+        const targetMs = scannedAtMs + targetDays * 24 * 60 * 60 * 1000;
+        const targetPoint = history.find((item) => new Date(item.date).getTime() >= targetMs);
+        if (!targetPoint?.close || !Number.isFinite(Number(targetPoint.close))) {
+          return null;
+        }
+        return Number((((Number(targetPoint.close) - entryPrice) / entryPrice) * 100).toFixed(2));
+      };
+
+      const validatedSnapshots = [];
+      for (const snapshot of snapshots) {
+        const scannedAt = String(snapshot.scannedAt || new Date().toISOString());
+        const candidates = Array.isArray(snapshot.candidates) ? snapshot.candidates.slice(0, 20) : [];
+        const refinements = Array.isArray(snapshot.refinements) ? snapshot.refinements : [];
+        const refinementMap = new Map(
+          refinements
+            .filter((item) => item && typeof item.symbol === 'string')
+            .map((item) => [String(item.symbol).toUpperCase(), item]),
+        );
+
+        const validatedCandidates = await runWithConcurrency(candidates, 5, async (candidate: any) => {
+          const symbol = String(candidate.symbol || '').toUpperCase();
+          const entryPrice = Number(candidate.metrics?.price || 0);
+          if (!symbol || !entryPrice) return null;
+
+          const bundle = await fetchMarketBundle(symbol, '6mo');
+          const currentPrice = bundle.quote.regularMarketPrice ?? bundle.packet.snapshot.price ?? entryPrice;
+          const currentReturnPct = entryPrice ? ((currentPrice - entryPrice) / entryPrice) * 100 : 0;
+          const lowsSinceEntry = bundle.history
+            .filter((item) => new Date(item.date).getTime() >= new Date(scannedAt).getTime())
+            .map((item) => Number(item.low ?? item.close ?? currentPrice))
+            .filter((item) => Number.isFinite(item));
+          const minPrice = lowsSinceEntry.length ? Math.min(...lowsSinceEntry) : currentPrice;
+          const maxDrawdownPct = entryPrice ? ((minPrice - entryPrice) / entryPrice) * 100 : 0;
+          const elapsedDays = daysBetween(scannedAt);
+          const refinement = refinementMap.get(symbol);
+          const day1ReturnPct = elapsedDays >= 1 ? buildWindowReturn(bundle.history, scannedAt, entryPrice, 1) : null;
+          const day5ReturnPct = elapsedDays >= 5 ? buildWindowReturn(bundle.history, scannedAt, entryPrice, 5) : null;
+          const day20ReturnPct = elapsedDays >= 20 ? buildWindowReturn(bundle.history, scannedAt, entryPrice, 20) : null;
+
+          return {
+            symbol,
+            currentPrice,
+            currentReturnPct: Number(currentReturnPct.toFixed(2)),
+            maxDrawdownPct: Number(maxDrawdownPct.toFixed(2)),
+            elapsedDays: Number(elapsedDays.toFixed(1)),
+            day1Qualified: elapsedDays >= 1,
+            day5Qualified: elapsedDays >= 5,
+            day20Qualified: elapsedDays >= 20,
+            day1ReturnPct,
+            day5ReturnPct,
+            day20ReturnPct,
+            positive: currentReturnPct > 0,
+            refinement,
+          };
+        });
+
+        validatedSnapshots.push({
+          ...snapshot,
+          validations: validatedCandidates.filter(Boolean),
+        });
+      }
+
+      const allValidations = validatedSnapshots.flatMap((snapshot) => snapshot.validations || []);
+      const rulesOnly = allValidations.filter((item: any) => !item.refinement);
+      const aiReviewed = allValidations.filter((item: any) => item.refinement);
+      const aiPromoted = allValidations.filter((item: any) => item.refinement?.shouldPromote);
+      const horizonKeys = [
+        { key: 'day1ReturnPct', label: '1日' },
+        { key: 'day5ReturnPct', label: '5日' },
+        { key: 'day20ReturnPct', label: '20日' },
+      ] as const;
+      const summarizeByReturnKey = (items: any[], key: 'currentReturnPct' | 'day1ReturnPct' | 'day5ReturnPct' | 'day20ReturnPct') =>
+        summarizeValidationGroup(
+          items
+            .filter((item) => typeof item[key] === 'number')
+            .map((item) => ({
+              returnPct: Number(item[key]),
+              drawdownPct: Number(item.maxDrawdownPct || 0),
+            })),
+        );
+
+      const templates = validatedSnapshots.map((snapshot: any) => {
+        const validations = Array.isArray(snapshot.validations) ? snapshot.validations : [];
+        return {
+          templateId: String(snapshot.templateId || ''),
+          templateName: String(snapshot.templateName || ''),
+          count: validations.length,
+          rulesOnly: summarizeByReturnKey(validations.filter((item: any) => !item.refinement), 'currentReturnPct'),
+          aiReviewed: summarizeByReturnKey(validations.filter((item: any) => item.refinement), 'currentReturnPct'),
+          aiPromoted: summarizeByReturnKey(validations.filter((item: any) => item.refinement?.shouldPromote), 'currentReturnPct'),
+        };
+      });
+
+      res.json({
+        snapshots: validatedSnapshots,
+        summary: {
+          rulesOnly: summarizeByReturnKey(rulesOnly, 'currentReturnPct'),
+          aiReviewed: summarizeByReturnKey(aiReviewed, 'currentReturnPct'),
+          aiPromoted: summarizeByReturnKey(aiPromoted, 'currentReturnPct'),
+          horizons: Object.fromEntries(
+            horizonKeys.map(({ key, label }) => [
+              label,
+              {
+                rulesOnly: summarizeByReturnKey(rulesOnly, key),
+                aiReviewed: summarizeByReturnKey(aiReviewed, key),
+                aiPromoted: summarizeByReturnKey(aiPromoted, key),
+              },
+            ]),
+          ),
+          templates,
+        },
+      });
+    } catch (error: any) {
+      console.error("Error validating scanner snapshots:", error);
+      res.status(500).json({ error: error.message || "Failed to validate scanner snapshots" });
+    }
+  });
+
   app.get("/api/tracking/overview", (_req, res) => {
     try {
       res.json(listTrackingOverview());
@@ -804,7 +1112,8 @@ export function createApp() {
   app.post("/api/tracking/run", async (req, res) => {
     try {
       const scope = (String(req.body?.scope || 'daily') as ReportScope);
-      const state = await runTrackingWorkflow(scope, 'manual');
+      const providedState = req.body?.state ? normalizeTrackingState(req.body.state) : null;
+      const state = await runTrackingWorkflow(scope, 'manual', providedState || undefined);
       res.json(state);
     } catch (error: any) {
       console.error("Error running tracking cycle:", error);

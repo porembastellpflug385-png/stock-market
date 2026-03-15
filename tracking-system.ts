@@ -132,6 +132,8 @@ type TrackingState = TrackingOverview;
 type RunTrackingCycleOptions = {
   scope: ReportScope;
   trigger?: 'manual' | 'cron';
+  initialState?: TrackingOverview;
+  persist?: boolean;
   fetchAsset: (symbol: string) => Promise<{
     quote: TrackingReportRecord['quote'];
     packet: AnalysisPacket;
@@ -188,38 +190,30 @@ const strategyProfiles: StrategyProfile[] = [
 
 const round = (value: number, digits = 4) => Number(value.toFixed(digits));
 
-const ensureStore = () => {
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-  if (!fs.existsSync(dataFile)) {
-    const initial: TrackingState = {
-      watchlist: [],
-      strategies: strategyProfiles,
-      portfolios: strategyProfiles.map((strategy) => ({
-        strategyId: strategy.id,
-        strategyName: strategy.name,
-        initialCash: 1_000_000,
-        cash: 1_000_000,
-        positions: [],
-        trades: [],
-        history: [],
-        lastRebalancedAt: null,
-      })),
-      latestReports: [],
-      validations: [],
-      generatedReports: [],
-    };
-    fs.writeFileSync(dataFile, JSON.stringify(initial, null, 2), 'utf8');
-  }
-};
+const createEmptyState = (): TrackingState => ({
+  watchlist: [],
+  strategies: strategyProfiles,
+  portfolios: strategyProfiles.map((strategy) => ({
+    strategyId: strategy.id,
+    strategyName: strategy.name,
+    initialCash: 1_000_000,
+    cash: 1_000_000,
+    positions: [],
+    trades: [],
+    history: [],
+    lastRebalancedAt: null,
+  })),
+  latestReports: [],
+  validations: [],
+  generatedReports: [],
+});
 
-const readState = (): TrackingState => {
-  ensureStore();
-  const raw = fs.readFileSync(dataFile, 'utf8');
-  const parsed = JSON.parse(raw) as TrackingState;
+export const normalizeTrackingState = (state?: Partial<TrackingOverview> | null): TrackingState => {
+  const base = createEmptyState();
+  if (!state) return base;
+
   return {
-    watchlist: (parsed.watchlist || []).map((item) => {
+    watchlist: (state.watchlist || []).map((item) => {
       const priority = Math.max(0, Math.min(3, Number(item.priority || 0)));
       const tags = Array.isArray(item.tags) ? [...item.tags] : [];
       const normalizedTags =
@@ -228,26 +222,39 @@ const readState = (): TrackingState => {
           : tags.filter((tag) => tag !== '重点');
 
       return {
-        ...item,
+        symbol: String(item.symbol || '').toUpperCase(),
+        name: item.name || String(item.symbol || '').toUpperCase(),
+        market: item.market || inferMarket(String(item.symbol || '').toUpperCase()),
+        assetClass: item.assetClass || inferAssetClass(String(item.symbol || '').toUpperCase()),
         tags: normalizedTags,
         priority,
+        notes: item.notes || '',
+        addedAt: item.addedAt || new Date().toISOString(),
       };
     }),
     strategies: strategyProfiles,
-    portfolios: parsed.portfolios?.length ? parsed.portfolios : strategyProfiles.map((strategy) => ({
-      strategyId: strategy.id,
-      strategyName: strategy.name,
-      initialCash: 1_000_000,
-      cash: 1_000_000,
-      positions: [],
-      trades: [],
-      history: [],
-      lastRebalancedAt: null,
-    })),
-    latestReports: parsed.latestReports || [],
-    validations: parsed.validations || [],
-    generatedReports: parsed.generatedReports || [],
+    portfolios: state.portfolios?.length ? state.portfolios : base.portfolios,
+    latestReports: state.latestReports || [],
+    validations: state.validations || [],
+    generatedReports: state.generatedReports || [],
   };
+};
+
+const ensureStore = () => {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  if (!fs.existsSync(dataFile)) {
+    const initial = createEmptyState();
+    fs.writeFileSync(dataFile, JSON.stringify(initial, null, 2), 'utf8');
+  }
+};
+
+const readState = (): TrackingState => {
+  ensureStore();
+  const raw = fs.readFileSync(dataFile, 'utf8');
+  const parsed = JSON.parse(raw) as TrackingState;
+  return normalizeTrackingState(parsed);
 };
 
 const writeState = (state: TrackingState) => {
@@ -528,6 +535,7 @@ const buildSummaryReport = (
   reports: TrackingReportRecord[],
   portfolios: StrategyPortfolio[],
   validations: ValidationRecord[],
+  failedSymbols: Array<{ symbol: string; error: string }> = [],
 ) => {
   const generatedAt = new Date().toLocaleString('zh-CN');
   const latestValidations = validations.slice(0, 10);
@@ -553,38 +561,60 @@ const buildSummaryReport = (
     ...latestValidations.map((item) =>
       `- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '正确' : '失效'} · 建议${item.recommendationEffective ? '有效' : '失效'}`,
     ),
+    ...(failedSymbols.length > 0
+      ? [
+          '',
+          '## 本次跳过的标的',
+          ...failedSymbols.map((item) => `- ${item.symbol}：${item.error}`),
+        ]
+      : []),
   ].join('\n');
 };
 
 export const runTrackingCycle = async ({
   scope,
   trigger = 'manual',
+  initialState,
+  persist = true,
   fetchAsset,
   generateAnalysis,
 }: RunTrackingCycleOptions) => {
-  const state = readState();
+  const state = initialState ? normalizeTrackingState(initialState) : readState();
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
+  const failedSymbols: Array<{ symbol: string; error: string }> = [];
 
   for (const asset of state.watchlist) {
-    const bundle = await fetchAsset(asset.symbol);
-    const analysis = await generateAnalysis(asset.symbol, bundle);
-    const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
-    const reportDate = new Date().toISOString();
-    const next: TrackingReportRecord = {
-      symbol: asset.symbol,
-      reportDate,
-      quote: bundle.quote,
-      indicators: bundle.packet.snapshot,
-      analysis,
-      structured,
-    };
+    try {
+      const bundle = await fetchAsset(asset.symbol);
+      const analysis = await generateAnalysis(asset.symbol, bundle);
+      const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
+      const reportDate = new Date().toISOString();
+      const next: TrackingReportRecord = {
+        symbol: asset.symbol,
+        reportDate,
+        quote: bundle.quote,
+        indicators: bundle.packet.snapshot,
+        analysis,
+        structured,
+      };
 
-    const previous = state.latestReports.find((item) => item.symbol === asset.symbol);
-    if (previous) {
-      nextValidations.unshift(createValidation(previous, next));
+      const previous = state.latestReports.find((item) => item.symbol === asset.symbol);
+      if (previous) {
+        nextValidations.unshift(createValidation(previous, next));
+      }
+      nextReports.push(next);
+    } catch (error: any) {
+      failedSymbols.push({
+        symbol: asset.symbol,
+        error: error?.message || '未知错误',
+      });
     }
-    nextReports.push(next);
+  }
+
+  if (nextReports.length === 0) {
+    const details = failedSymbols.slice(0, 5).map((item) => `${item.symbol}: ${item.error}`).join('；');
+    throw new Error(details ? `本次日报生成失败，全部标的处理异常。${details}` : '本次日报生成失败，未能处理任何标的。');
   }
 
   state.latestReports = nextReports;
@@ -604,11 +634,13 @@ export const runTrackingCycle = async ({
     scope,
     generatedAt: new Date().toISOString(),
     title: `${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · ${new Date().toLocaleDateString('zh-CN')}`,
-    markdown: buildSummaryReport(scope, nextReports, state.portfolios, state.validations),
+    markdown: buildSummaryReport(scope, nextReports, state.portfolios, state.validations, failedSymbols),
     trigger,
   });
   state.generatedReports = state.generatedReports.slice(0, 60);
 
-  writeState(state);
+  if (persist) {
+    writeState(state);
+  }
   return state;
 };

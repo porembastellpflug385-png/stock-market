@@ -140,6 +140,141 @@ type TrackingOverview = {
   strategies: Array<{ id: string; name: string; description: string; objective: string }>;
 };
 
+type ScannerTemplateId =
+  | 'breakout'
+  | 'volume-surge'
+  | 'oversold-rebound'
+  | 'trend-follow'
+  | 'etf-rotation';
+
+type ScannerMarket = 'US' | 'CN' | 'HK' | 'ETF' | 'CRYPTO';
+
+type ScannerTemplate = {
+  id: ScannerTemplateId;
+  name: string;
+  description: string;
+  objective: string;
+};
+
+type ScannerCandidate = {
+  symbol: string;
+  name: string;
+  market: ScannerMarket;
+  assetClass: 'equity' | 'etf' | 'crypto';
+  templateId: ScannerTemplateId;
+  templateName: string;
+  opportunityScore: number;
+  riskScore: number;
+  actionBias: 'watch' | 'prepare' | 'execute';
+  summary: string;
+  reasons: string[];
+  metrics: {
+    price: number;
+    changePercent: number;
+    signalScore: number;
+    rsi14: number | null;
+    relativeVolume: number | null;
+    annualizedVolatility: number | null;
+    weekReturn: number | null;
+    monthReturn: number | null;
+  };
+};
+
+type ScannerRefinement = {
+  symbol: string;
+  aiScore: number;
+  conviction: 'high' | 'medium' | 'low';
+  recommendation: 'focus' | 'watch' | 'skip';
+  shouldPromote: boolean;
+  summary: string;
+  risks: string[];
+};
+
+type ScannerSnapshot = {
+  id: string;
+  scannedAt: string;
+  templateId: ScannerTemplateId;
+  templateName: string;
+  markets: ScannerMarket[];
+  scanned: number;
+  candidates: ScannerCandidate[];
+  refinements: ScannerRefinement[];
+};
+
+type ScannerValidationItem = {
+  symbol: string;
+  currentPrice: number;
+  currentReturnPct: number;
+  maxDrawdownPct: number;
+  elapsedDays: number;
+  day1Qualified: boolean;
+  day5Qualified: boolean;
+  day20Qualified: boolean;
+  day1ReturnPct: number | null;
+  day5ReturnPct: number | null;
+  day20ReturnPct: number | null;
+  positive: boolean;
+  refinement?: ScannerRefinement;
+};
+
+type ScannerValidatedSnapshot = ScannerSnapshot & {
+  validations: ScannerValidationItem[];
+};
+
+type ScannerValidationAggregate = {
+  count: number;
+  winRate: number;
+  avgReturn: number;
+  avgDrawdown: number;
+  riskReward: number;
+};
+
+type ScannerValidationSummary = {
+  rulesOnly: ScannerValidationAggregate;
+  aiReviewed: ScannerValidationAggregate;
+  aiPromoted: ScannerValidationAggregate;
+  horizons: Record<'1日' | '5日' | '20日', {
+    rulesOnly: ScannerValidationAggregate;
+    aiReviewed: ScannerValidationAggregate;
+    aiPromoted: ScannerValidationAggregate;
+  }>;
+  templates: Array<{
+    templateId: ScannerTemplateId;
+    templateName: string;
+    count: number;
+    rulesOnly: ScannerValidationAggregate;
+    aiReviewed: ScannerValidationAggregate;
+    aiPromoted: ScannerValidationAggregate;
+  }>;
+};
+
+type ScannerUpgradeRecommendation = {
+  symbol: string;
+  name: string;
+  targetPriority: 1 | 2 | 3;
+  reason: string;
+  candidate: ScannerCandidate;
+  refinement?: ScannerRefinement;
+};
+
+type CandidatePoolItemStatus = 'candidate' | 'watching' | 'upgraded' | 'dismissed';
+
+type CandidatePoolItem = {
+  symbol: string;
+  name: string;
+  market: ScannerMarket;
+  assetClass: ScannerCandidate['assetClass'];
+  templateId: ScannerTemplateId;
+  templateName: string;
+  opportunityScore: number;
+  aiScore: number | null;
+  targetPriority: 0 | 1 | 2 | 3;
+  status: CandidatePoolItemStatus;
+  note: string;
+  summary: string;
+  addedAt: string;
+};
+
 type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
@@ -156,6 +291,9 @@ type ProviderDebugInfo = {
 
 const providerStorageKey = 'market-analyzer-provider-config';
 const trackingWatchlistStorageKey = 'market-analyzer-tracking-watchlist';
+const trackingOverviewStorageKey = 'market-analyzer-tracking-overview';
+const scannerSnapshotsStorageKey = 'market-analyzer-scanner-snapshots';
+const candidatePoolStorageKey = 'market-analyzer-candidate-pool';
 const defaultProviderConfig: ProviderConfig = {
   baseUrl: '',
   apiKey: '',
@@ -184,6 +322,47 @@ const riskOptions: Array<{ value: AnalysisPreferences['riskProfile']; label: str
   { value: 'conservative', label: '稳健' },
   { value: 'balanced', label: '平衡' },
   { value: 'aggressive', label: '进取' },
+];
+
+const trackingStrategies = [
+  {
+    id: 'global-value',
+    name: '全球价值基金风格',
+    description: '偏低估、低换手、重估值安全边际。',
+    objective: '优先寻找估值合理、技术结构未破坏的资产。',
+  },
+  {
+    id: 'global-growth',
+    name: '全球成长基金风格',
+    description: '偏趋势成长、强者恒强、景气驱动。',
+    objective: '优先配置趋势强、量价健康的高质量成长资产。',
+  },
+  {
+    id: 'macro-hedge',
+    name: '宏观对冲风格',
+    description: '重视风险预算、波动控制与现金管理。',
+    objective: '在不确定环境中以防守和选择性进攻并重。',
+  },
+  {
+    id: 'highflyer-quant',
+    name: '幻方量化风格',
+    description: '多因子、规则驱动、强调统计优势。',
+    objective: '根据信号评分、动量与波动因子进行系统性配置。',
+  },
+  {
+    id: 'etf-rotation',
+    name: 'ETF 轮动风格',
+    description: '面向 ETF 和指数代理资产的轮动策略。',
+    objective: '在相对强势资产和低波动资产间做周期轮换。',
+  },
+] as const;
+const trackingAiMaxAssets = 6;
+const scannerMarketOptions: Array<{ value: ScannerMarket; label: string }> = [
+  { value: 'US', label: '美股' },
+  { value: 'CN', label: 'A股' },
+  { value: 'HK', label: '港股' },
+  { value: 'ETF', label: 'ETF' },
+  { value: 'CRYPTO', label: '加密' },
 ];
 
 const formatNumber = (num?: number | null, digits = 2) => {
@@ -240,6 +419,108 @@ const persistTrackingWatchlist = (watchlist: TrackingAsset[]) => {
     return;
   }
   window.localStorage.setItem(trackingWatchlistStorageKey, JSON.stringify(watchlist));
+};
+
+const inferTrackingAssetClass = (symbol: string): TrackingAsset['assetClass'] => {
+  if (symbol.endsWith('-USD')) return 'crypto';
+  if (/ETF|SPY|QQQ|IWM|TLT|GLD|DIA/i.test(symbol)) return 'etf';
+  if (/\.HK|\.SS|\.SZ|^[A-Z]+$/.test(symbol)) return 'equity';
+  return 'other';
+};
+
+const inferTrackingMarket = (symbol: string) => {
+  if (symbol.endsWith('.SS')) return 'SSE';
+  if (symbol.endsWith('.SZ')) return 'SZSE';
+  if (symbol.endsWith('.HK')) return 'HKEX';
+  if (symbol.endsWith('-USD')) return 'CRYPTO';
+  return 'GLOBAL';
+};
+
+const createEmptyTrackingOverview = (): TrackingOverview => ({
+  watchlist: [],
+  strategies: [...trackingStrategies],
+  portfolios: trackingStrategies.map((strategy) => ({
+    strategyId: strategy.id,
+    strategyName: strategy.name,
+    initialCash: 1_000_000,
+    cash: 1_000_000,
+    positions: [],
+    trades: [],
+    history: [],
+    lastRebalancedAt: null,
+  })),
+  latestReports: [],
+  validations: [],
+  generatedReports: [],
+});
+
+const normalizeTrackingOverview = (payload: Partial<TrackingOverview> | null | undefined): TrackingOverview => {
+  const base = createEmptyTrackingOverview();
+  if (!payload) return base;
+  return {
+    watchlist: Array.isArray(payload.watchlist) ? payload.watchlist : [],
+    strategies: Array.isArray(payload.strategies) && payload.strategies.length ? payload.strategies : base.strategies,
+    portfolios: Array.isArray(payload.portfolios) && payload.portfolios.length ? payload.portfolios : base.portfolios,
+    latestReports: Array.isArray(payload.latestReports) ? payload.latestReports : [],
+    validations: Array.isArray(payload.validations) ? payload.validations : [],
+    generatedReports: Array.isArray(payload.generatedReports) ? payload.generatedReports : [],
+  };
+};
+
+const readStoredTrackingOverview = (): TrackingOverview => {
+  try {
+    const raw = window.localStorage.getItem(trackingOverviewStorageKey);
+    if (raw) {
+      return normalizeTrackingOverview(JSON.parse(raw));
+    }
+    const legacyWatchlist = readStoredTrackingWatchlist();
+    if (legacyWatchlist.length > 0) {
+      return normalizeTrackingOverview({
+        ...createEmptyTrackingOverview(),
+        watchlist: legacyWatchlist,
+      });
+    }
+    return createEmptyTrackingOverview();
+  } catch {
+    return createEmptyTrackingOverview();
+  }
+};
+
+const persistTrackingOverview = (overview: TrackingOverview) => {
+  window.localStorage.setItem(trackingOverviewStorageKey, JSON.stringify(overview));
+  persistTrackingWatchlist(overview.watchlist || []);
+};
+
+const readStoredScannerSnapshots = (): ScannerSnapshot[] => {
+  try {
+    const raw = window.localStorage.getItem(scannerSnapshotsStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistScannerSnapshots = (snapshots: ScannerSnapshot[]) => {
+  window.localStorage.setItem(scannerSnapshotsStorageKey, JSON.stringify(snapshots.slice(0, 20)));
+};
+
+const readStoredCandidatePool = (): CandidatePoolItem[] => {
+  try {
+    const raw = window.localStorage.getItem(candidatePoolStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item.symbol === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistCandidatePool = (items: CandidatePoolItem[]) => {
+  window.localStorage.setItem(candidatePoolStorageKey, JSON.stringify(items.slice(0, 80)));
 };
 
 const normalizeSearchResults = (payload: any) => {
@@ -635,6 +916,20 @@ function App() {
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState<string | null>(null);
   const [trackingAction, setTrackingAction] = useState<string | null>(null);
+  const [scannerTemplates, setScannerTemplates] = useState<ScannerTemplate[]>([]);
+  const [scannerTemplateId, setScannerTemplateId] = useState<ScannerTemplateId>('trend-follow');
+  const [scannerMarkets, setScannerMarkets] = useState<ScannerMarket[]>(['US', 'CN', 'HK', 'ETF', 'CRYPTO']);
+  const [scannerLoading, setScannerLoading] = useState(false);
+  const [scannerError, setScannerError] = useState<string | null>(null);
+  const [scannerResults, setScannerResults] = useState<ScannerCandidate[]>([]);
+  const [scannerScanned, setScannerScanned] = useState(0);
+  const [scannerRefineLoading, setScannerRefineLoading] = useState(false);
+  const [scannerRefinements, setScannerRefinements] = useState<ScannerRefinement[]>([]);
+  const [scannerSnapshots, setScannerSnapshots] = useState<ScannerSnapshot[]>([]);
+  const [candidatePool, setCandidatePool] = useState<CandidatePoolItem[]>([]);
+  const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
+  const [scannerValidatedSnapshots, setScannerValidatedSnapshots] = useState<ScannerValidatedSnapshot[]>([]);
+  const [scannerValidationSummary, setScannerValidationSummary] = useState<ScannerValidationSummary | null>(null);
 
   const [preferences, setPreferences] = useState<AnalysisPreferences>(defaultPreferences);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -655,6 +950,8 @@ function App() {
     } catch (storageError) {
       console.error('Load provider config failed:', storageError);
     }
+    setTrackingOverview(readStoredTrackingOverview());
+    setScannerSnapshots(readStoredScannerSnapshots());
   }, []);
 
   useEffect(() => {
@@ -714,6 +1011,60 @@ function App() {
       loadTrackingOverview();
     }
   }, [activeView]);
+
+  useEffect(() => {
+    const loadScannerTemplates = async () => {
+      try {
+        const res = await fetch('/api/scanner/templates');
+        const payload = await readApiPayload(res);
+        if (!res.ok) {
+          throw new Error(getPayloadError(payload, '加载扫描模板失败'));
+        }
+        if (Array.isArray(payload.templates)) {
+          setScannerTemplates(payload.templates);
+        }
+      } catch (scannerTemplateError) {
+        console.error('Load scanner templates failed:', scannerTemplateError);
+      }
+    };
+
+    loadScannerTemplates();
+  }, []);
+
+  useEffect(() => {
+    setCandidatePool(readStoredCandidatePool());
+  }, []);
+
+  useEffect(() => {
+    if (scannerSnapshots.length === 0) {
+      setScannerValidatedSnapshots([]);
+      setScannerValidationSummary(null);
+      return;
+    }
+
+    const runValidation = async () => {
+      setScannerValidationLoading(true);
+      try {
+        const res = await fetch('/api/scanner/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ snapshots: scannerSnapshots }),
+        });
+        const payload = await readApiPayload(res);
+        if (!res.ok) {
+          throw new Error(getPayloadError(payload, '加载扫描验证失败'));
+        }
+        setScannerValidatedSnapshots(Array.isArray(payload.snapshots) ? payload.snapshots : []);
+        setScannerValidationSummary(payload.summary || null);
+      } catch (validationError) {
+        console.error('Load scanner validation failed:', validationError);
+      } finally {
+        setScannerValidationLoading(false);
+      }
+    };
+
+    runValidation();
+  }, [scannerSnapshots]);
 
   const hasCustomProvider = false;
 
@@ -813,8 +1164,14 @@ function App() {
     if (!query) return;
 
     let symbolToUse = query;
+    let resolvedMeta: Partial<Pick<TrackingAsset, 'name' | 'market' | 'assetClass'>> | undefined;
     if (searchResults.length > 0 && searchQuery !== ticker) {
       symbolToUse = searchResults[0].symbol;
+      resolvedMeta = {
+        name: searchResults[0].shortname || searchResults[0].longname || searchResults[0].symbol,
+        market: searchResults[0].exchange || inferTrackingMarket(searchResults[0].symbol),
+        assetClass: inferTrackingAssetClass(searchResults[0].symbol),
+      };
     } else {
       try {
         const res = await fetch(`/api/search/${encodeURIComponent(query)}`, {
@@ -825,6 +1182,11 @@ function App() {
           const results = normalizeSearchResults(data);
           if (results[0]?.symbol) {
             symbolToUse = results[0].symbol;
+            resolvedMeta = {
+              name: results[0].shortname || results[0].longname || results[0].symbol,
+              market: results[0].exchange || inferTrackingMarket(results[0].symbol),
+              assetClass: inferTrackingAssetClass(results[0].symbol),
+            };
           }
         }
       } catch (fetchError) {
@@ -853,7 +1215,7 @@ function App() {
     setShowDropdown(false);
 
     if (activeView === 'tracking') {
-      await addTrackingAsset(symbolToUse);
+      await addTrackingAsset(symbolToUse, resolvedMeta);
       return;
     }
 
@@ -1000,66 +1362,13 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const restoreTrackingWatchlist = async (savedWatchlist: TrackingAsset[]) => {
-    for (const asset of [...savedWatchlist].reverse()) {
-      const addRes = await fetch('/api/tracking/watchlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: asset.symbol,
-          tags: asset.tags.filter((tag) => tag !== '重点'),
-          notes: asset.notes,
-        }),
-      });
-      const addPayload = await readApiPayload(addRes);
-      if (!addRes.ok) {
-        throw new Error(getPayloadError(addPayload, `恢复 ${asset.symbol} 失败`));
-      }
-
-      if (asset.priority > 0) {
-        const priorityRes = await fetch(`/api/tracking/watchlist/${encodeURIComponent(asset.symbol)}/priority`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ priority: asset.priority }),
-        });
-        const priorityPayload = await readApiPayload(priorityRes);
-        if (!priorityRes.ok) {
-          throw new Error(getPayloadError(priorityPayload, `恢复 ${asset.symbol} 优先级失败`));
-        }
-      }
-    }
-
-    const overviewRes = await fetch('/api/tracking/overview');
-    const overviewPayload = await readApiPayload(overviewRes);
-    if (!overviewRes.ok) {
-      throw new Error(getPayloadError(overviewPayload, '恢复关注池后刷新失败'));
-    }
-    return overviewPayload as TrackingOverview;
-  };
-
   const loadTrackingOverview = async () => {
     setTrackingLoading(true);
     setTrackingError(null);
     try {
-      const res = await fetch('/api/tracking/overview');
-      const payload = await readApiPayload(res);
-      if (!res.ok) {
-        throw new Error(getPayloadError(payload, '加载跟踪系统失败'));
-      }
-      const overview = payload as TrackingOverview;
-      if (overview.watchlist?.length) {
-        setTrackingOverview(overview);
-        persistTrackingWatchlist(overview.watchlist);
-      } else {
-        const savedWatchlist = readStoredTrackingWatchlist();
-        if (savedWatchlist.length > 0) {
-          const restoredOverview = await restoreTrackingWatchlist(savedWatchlist);
-          setTrackingOverview(restoredOverview);
-          persistTrackingWatchlist(restoredOverview.watchlist || savedWatchlist);
-        } else {
-          setTrackingOverview(overview);
-        }
-      }
+      const overview = readStoredTrackingOverview();
+      setTrackingOverview(overview);
+      persistTrackingOverview(overview);
     } catch (trackingLoadError: any) {
       setTrackingError(trackingLoadError.message || '加载跟踪系统失败');
     } finally {
@@ -1067,22 +1376,160 @@ function App() {
     }
   };
 
-  const addTrackingAsset = async (symbol: string) => {
-    setTrackingAction('add');
-    setTrackingError(null);
+  const toggleScannerMarket = (market: ScannerMarket) => {
+    setScannerMarkets((current) => {
+      const exists = current.includes(market);
+      if (exists) {
+        const next = current.filter((item) => item !== market);
+        return next.length ? next : [market];
+      }
+      return [...current, market];
+    });
+  };
+
+  const runScanner = async () => {
+    setScannerLoading(true);
+    setScannerError(null);
     try {
-      const res = await fetch('/api/tracking/watchlist', {
+      const res = await fetch('/api/scanner/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol }),
+        body: JSON.stringify({
+          templateId: scannerTemplateId,
+          markets: scannerMarkets,
+          limit: 12,
+        }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
-        throw new Error(getPayloadError(payload, '加入关注池失败'));
+        throw new Error(getPayloadError(payload, '运行市场扫描失败'));
       }
-      const overview = payload as TrackingOverview;
+      setScannerResults(Array.isArray(payload.candidates) ? payload.candidates : []);
+      setScannerScanned(Number(payload.scanned || 0));
+      setScannerRefinements([]);
+      const activeTemplate = scannerTemplates.find((item) => item.id === scannerTemplateId);
+      const nextSnapshots = [
+        {
+          id: `scan-${Date.now()}`,
+          scannedAt: new Date().toISOString(),
+          templateId: scannerTemplateId,
+          templateName: activeTemplate?.name || scannerTemplateId,
+          markets: scannerMarkets,
+          scanned: Number(payload.scanned || 0),
+          candidates: Array.isArray(payload.candidates) ? payload.candidates : [],
+          refinements: [],
+        },
+        ...scannerSnapshots,
+      ].slice(0, 20);
+      setScannerSnapshots(nextSnapshots);
+      persistScannerSnapshots(nextSnapshots);
+    } catch (scannerRunError: any) {
+      setScannerError(scannerRunError.message || '运行市场扫描失败');
+    } finally {
+      setScannerLoading(false);
+    }
+  };
+
+  const runScannerRefinement = async () => {
+    if (scannerResults.length === 0) {
+      setScannerError('请先运行规则扫描，再执行 AI 精筛。');
+      return;
+    }
+
+    setScannerRefineLoading(true);
+    setScannerError(null);
+    try {
+      const candidates = scannerResults.slice(0, 10).map((item) => ({
+        symbol: item.symbol,
+        name: item.name,
+        market: item.market,
+        templateName: item.templateName,
+        opportunityScore: item.opportunityScore,
+        riskScore: item.riskScore,
+        actionBias: item.actionBias,
+        summary: item.summary,
+        reasons: item.reasons,
+        metrics: item.metrics,
+      }));
+
+      const res = await fetch('/api/scanner/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidates, topN: 6 }),
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, 'AI 精筛失败'));
+      }
+
+      const refinements = Array.isArray(payload.refined) ? payload.refined : [];
+      setScannerRefinements(refinements);
+      if (scannerSnapshots.length > 0) {
+        const nextSnapshots = scannerSnapshots.map((snapshot, index) =>
+          index === 0
+            ? {
+                ...snapshot,
+                refinements,
+              }
+            : snapshot,
+        );
+        setScannerSnapshots(nextSnapshots);
+        persistScannerSnapshots(nextSnapshots);
+      }
+    } catch (scannerRefineError: any) {
+      setScannerError(scannerRefineError.message || 'AI 精筛失败');
+    } finally {
+      setScannerRefineLoading(false);
+    }
+  };
+
+  const verifyTrackingAsset = async (symbol: string) => {
+    const response = await fetch(`/api/asset/${encodeURIComponent(symbol)}?timeframe=6mo`);
+    const payload = await readApiPayload(response);
+    if (!response.ok) {
+      throw new Error(getPayloadError(payload, `标的 ${symbol} 暂时无法获取行情`));
+    }
+    if (!hasAssetPayloadShape(payload)) {
+      throw new Error(`标的 ${symbol} 返回格式异常，请稍后再试`);
+    }
+    return payload;
+  };
+
+  const addTrackingAsset = async (
+    symbol: string,
+    metadata?: Partial<Pick<TrackingAsset, 'name' | 'market' | 'assetClass'>>,
+  ) => {
+    setTrackingAction('add');
+    setTrackingError(null);
+    try {
+      const nextSymbol = symbol.trim().toUpperCase();
+      const current = trackingOverview || readStoredTrackingOverview();
+      if (current.watchlist.some((item) => item.symbol === nextSymbol)) {
+        setTrackingOverview(current);
+        return;
+      }
+
+      const verifiedAsset = await verifyTrackingAsset(nextSymbol);
+      const verifiedQuote = verifiedAsset.quote as Quote;
+
+      const overview = normalizeTrackingOverview({
+        ...current,
+        watchlist: [
+          {
+            symbol: nextSymbol,
+            name: metadata?.name || verifiedQuote.shortName || verifiedQuote.longName || nextSymbol,
+            market: metadata?.market || verifiedQuote.exchange || inferTrackingMarket(nextSymbol),
+            assetClass: metadata?.assetClass || inferTrackingAssetClass(nextSymbol),
+            tags: [],
+            priority: 0,
+            notes: '',
+            addedAt: new Date().toISOString(),
+          },
+          ...current.watchlist,
+        ],
+      });
       setTrackingOverview(overview);
-      persistTrackingWatchlist(overview.watchlist || []);
+      persistTrackingOverview(overview);
       setSearchQuery('');
       setSearchResults([]);
     } catch (trackingActionError: any) {
@@ -1096,16 +1543,13 @@ function App() {
     setTrackingAction(symbol);
     setTrackingError(null);
     try {
-      const res = await fetch(`/api/tracking/watchlist/${encodeURIComponent(symbol)}`, {
-        method: 'DELETE',
+      const current = trackingOverview || readStoredTrackingOverview();
+      const overview = normalizeTrackingOverview({
+        ...current,
+        watchlist: current.watchlist.filter((item) => item.symbol !== symbol.toUpperCase()),
       });
-      const payload = await readApiPayload(res);
-      if (!res.ok) {
-        throw new Error(getPayloadError(payload, '移除关注池失败'));
-      }
-      const overview = payload as TrackingOverview;
       setTrackingOverview(overview);
-      persistTrackingWatchlist(overview.watchlist || []);
+      persistTrackingOverview(overview);
     } catch (trackingActionError: any) {
       setTrackingError(trackingActionError.message || '移除关注池失败');
     } finally {
@@ -1117,18 +1561,25 @@ function App() {
     setTrackingAction(`priority-${symbol}-${priority}`);
     setTrackingError(null);
     try {
-      const res = await fetch(`/api/tracking/watchlist/${encodeURIComponent(symbol)}/priority`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ priority }),
+      const current = trackingOverview || readStoredTrackingOverview();
+      const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
+      const overview = normalizeTrackingOverview({
+        ...current,
+        watchlist: current.watchlist.map((item) =>
+          item.symbol !== symbol.toUpperCase()
+            ? item
+            : {
+                ...item,
+                priority: normalizedPriority,
+                tags:
+                  normalizedPriority > 0
+                    ? Array.from(new Set([...item.tags, '重点']))
+                    : item.tags.filter((tag) => tag !== '重点'),
+              },
+        ),
       });
-      const payload = await readApiPayload(res);
-      if (!res.ok) {
-        throw new Error(getPayloadError(payload, '更新优先级失败'));
-      }
-      const overview = payload as TrackingOverview;
       setTrackingOverview(overview);
-      persistTrackingWatchlist(overview.watchlist || []);
+      persistTrackingOverview(overview);
     } catch (trackingPriorityError: any) {
       setTrackingError(trackingPriorityError.message || '更新优先级失败');
     } finally {
@@ -1136,31 +1587,117 @@ function App() {
     }
   };
 
+  const addCandidatePoolItem = (
+    candidate: ScannerCandidate,
+    options?: {
+      targetPriority?: 0 | 1 | 2 | 3;
+      status?: CandidatePoolItemStatus;
+      note?: string;
+      refinement?: ScannerRefinement;
+    },
+  ) => {
+    const nextItem: CandidatePoolItem = {
+      symbol: candidate.symbol,
+      name: candidate.name,
+      market: candidate.market,
+      assetClass: candidate.assetClass,
+      templateId: candidate.templateId,
+      templateName: candidate.templateName,
+      opportunityScore: candidate.opportunityScore,
+      aiScore: options?.refinement?.aiScore ?? null,
+      targetPriority: options?.targetPriority ?? 0,
+      status: options?.status ?? 'candidate',
+      note: options?.note ?? '',
+      summary: options?.refinement?.summary || candidate.summary,
+      addedAt: new Date().toISOString(),
+    };
+
+    const nextPool = [
+      nextItem,
+      ...candidatePool.filter((item) => item.symbol !== candidate.symbol),
+    ].slice(0, 80);
+    setCandidatePool(nextPool);
+    persistCandidatePool(nextPool);
+  };
+
+  const updateCandidatePoolStatus = (
+    symbol: string,
+    status: CandidatePoolItemStatus,
+    targetPriority?: 0 | 1 | 2 | 3,
+  ) => {
+    const nextPool = candidatePool.map((item) =>
+      item.symbol !== symbol
+        ? item
+        : {
+            ...item,
+            status,
+            targetPriority: targetPriority ?? item.targetPriority,
+          },
+    );
+    setCandidatePool(nextPool);
+    persistCandidatePool(nextPool);
+  };
+
+  const removeCandidatePoolItem = (symbol: string) => {
+    const nextPool = candidatePool.filter((item) => item.symbol !== symbol);
+    setCandidatePool(nextPool);
+    persistCandidatePool(nextPool);
+  };
+
+  const buildScannerDigest = () => {
+    const latestSnapshot = scannerSnapshots[0];
+    const activeCandidates = candidatePool.filter((item) => item.status !== 'dismissed');
+    if (!latestSnapshot && activeCandidates.length === 0) return '';
+
+    const lines = [
+      '## 扫描器摘要',
+      '',
+      latestSnapshot
+        ? `- 最近扫描：${latestSnapshot.templateName} · ${new Date(latestSnapshot.scannedAt).toLocaleString('zh-CN')} · 候选 ${latestSnapshot.candidates.length} 只`
+        : '- 最近扫描：暂无',
+      `- 候选池状态：待观察 ${candidatePool.filter((item) => item.status === 'candidate').length} / 观察中 ${candidatePool.filter((item) => item.status === 'watching').length} / 已升级 ${candidatePool.filter((item) => item.status === 'upgraded').length}`,
+      '',
+      '### 今日优先候选',
+      ...(activeCandidates.slice(0, 5).map((item) =>
+        `- ${item.symbol}：${item.templateName} · 规则分 ${item.opportunityScore}${item.aiScore != null ? ` · AI 分 ${item.aiScore}` : ''} · 建议 P${item.targetPriority || 1} · ${item.summary}`,
+      ) || ['- 暂无可用候选']),
+      '',
+    ];
+    return lines.join('\n');
+  };
+
   const runTrackingScope = async (scope: 'daily' | 'weekly' | 'monthly') => {
     setTrackingAction(scope);
     setTrackingError(null);
     try {
-      if ((trackingOverview?.watchlist?.length || 0) === 0) {
-        const savedWatchlist = readStoredTrackingWatchlist();
-        if (savedWatchlist.length > 0) {
-          const restoredOverview = await restoreTrackingWatchlist(savedWatchlist);
-          setTrackingOverview(restoredOverview);
-          persistTrackingWatchlist(restoredOverview.watchlist || savedWatchlist);
-        }
+      const currentOverview = trackingOverview || readStoredTrackingOverview();
+      if ((currentOverview.watchlist?.length || 0) === 0) {
+        throw new Error(`请先加入至少一个关注标的，再生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}。`);
       }
 
       const res = await fetch('/api/tracking/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope }),
+        body: JSON.stringify({ scope, state: currentOverview }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
         throw new Error(getPayloadError(payload, `生成${scope}报告失败`));
       }
-      const overview = payload as TrackingOverview;
+      const overview = normalizeTrackingOverview(payload as TrackingOverview);
+      const scannerDigest = buildScannerDigest();
+      if (scannerDigest && overview.generatedReports.length > 0) {
+        const [latestReport, ...restReports] = overview.generatedReports;
+        overview.generatedReports = [
+          {
+            ...latestReport,
+            markdown: `${latestReport.markdown}\n\n${scannerDigest}`,
+          },
+          ...restReports,
+        ];
+      }
       setTrackingOverview(overview);
-      persistTrackingWatchlist(overview.watchlist || []);
+      persistTrackingOverview(overview);
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {
@@ -1282,6 +1819,78 @@ function App() {
     (left, right) => right.priority - left.priority || left.addedAt.localeCompare(right.addedAt),
   );
   const priorityAssets = sortedWatchlist.filter((item) => item.priority > 0 || item.tags.includes('重点'));
+  const plannedAiAssets = priorityAssets.slice(0, trackingAiMaxAssets);
+  const refinementBySymbol = new Map<string, ScannerRefinement>(
+    scannerRefinements.map((item) => [item.symbol, item]),
+  );
+  const latestScannerSnapshot = scannerSnapshots[0] || null;
+  const latestValidatedSnapshot = scannerValidatedSnapshots[0] || null;
+  const scannerHorizonSummaries = scannerValidationSummary?.horizons
+    ? ([
+        ['1日', scannerValidationSummary.horizons['1日']],
+        ['5日', scannerValidationSummary.horizons['5日']],
+        ['20日', scannerValidationSummary.horizons['20日']],
+      ] as const)
+    : [];
+  const scannerTemplateSummaries = scannerValidationSummary?.templates || [];
+  const sortedCandidatePool = [...candidatePool].sort(
+    (left, right) =>
+      right.targetPriority - left.targetPriority ||
+      (right.aiScore ?? -1) - (left.aiScore ?? -1) ||
+      right.opportunityScore - left.opportunityScore ||
+      right.addedAt.localeCompare(left.addedAt),
+  );
+  const scannerUpgradeRecommendations: ScannerUpgradeRecommendation[] = scannerResults
+    .map((candidate) => {
+      const refinement = refinementBySymbol.get(candidate.symbol);
+      const highConviction = refinement?.conviction === 'high';
+      const aiScore = refinement?.aiScore ?? 0;
+      const shouldPromote = refinement?.shouldPromote ?? false;
+
+      if (candidate.opportunityScore >= 88 && aiScore >= 84 && shouldPromote && highConviction) {
+        return {
+          symbol: candidate.symbol,
+          name: candidate.name,
+          targetPriority: 3 as const,
+          reason: '规则分、AI 分和高置信度同时满足，适合直接进入核心重点跟踪。',
+          candidate,
+          refinement,
+        };
+      }
+
+      if (candidate.opportunityScore >= 78 && aiScore >= 72 && shouldPromote) {
+        return {
+          symbol: candidate.symbol,
+          name: candidate.name,
+          targetPriority: 2 as const,
+          reason: '规则和 AI 都给出较强正反馈，适合进入重点候选并纳入日报优先处理。',
+          candidate,
+          refinement,
+        };
+      }
+
+      if (candidate.opportunityScore >= 68 || aiScore >= 66) {
+        return {
+          symbol: candidate.symbol,
+          name: candidate.name,
+          targetPriority: 1 as const,
+          reason: '已有一定机会分或 AI 认可度，适合进入基础重点观察名单。',
+          candidate,
+          refinement,
+        };
+      }
+
+      return null;
+    })
+    .filter((item): item is ScannerUpgradeRecommendation => Boolean(item))
+    .sort((left, right) => {
+      if (right.targetPriority !== left.targetPriority) return right.targetPriority - left.targetPriority;
+      const rightAi = right.refinement?.aiScore ?? 0;
+      const leftAi = left.refinement?.aiScore ?? 0;
+      if (rightAi !== leftAi) return rightAi - leftAi;
+      return right.candidate.opportunityScore - left.candidate.opportunityScore;
+    })
+    .slice(0, 8);
   const allValidations = trackingOverview?.validations || [];
   const reportBySymbol = new Map(latestTrackingReports.map((item) => [item.symbol, item]));
   const watchlistBySymbol = new Map(sortedWatchlist.map((item) => [item.symbol, item]));
@@ -1425,6 +2034,39 @@ function App() {
               当前只有打上“重点”标签的标的会调用 AI；其余标的只做规则分析和验证，用来控制 API key 消耗。
             </div>
           </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">本次处理</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{watchlist.length}</div>
+              <div className="text-xs text-slate-400">全部关注标的都会进入规则扫描与验证</div>
+            </div>
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">重点标的</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{priorityAssets.length}</div>
+              <div className="text-xs text-slate-400">P1 / P2 / P3 都属于重点候选</div>
+            </div>
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">AI 覆盖</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{plannedAiAssets.length}</div>
+              <div className="text-xs text-slate-400">默认最多 {trackingAiMaxAssets} 只，按 P3 → P2 → P1 顺序处理</div>
+            </div>
+          </div>
+          {watchlist.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/10 p-4 text-sm text-amber-100">
+              当前关注池为空。先在右上角输入股票或加密资产并加入关注池，再生成报告。
+            </div>
+          ) : priorityAssets.length === 0 ? (
+            <div className="mt-4 rounded-2xl border border-sky-300/15 bg-sky-300/10 p-4 text-sm text-sky-100">
+              当前没有重点标的。本次仍会生成规则日报，但不会调用 AI 深度分析。
+            </div>
+          ) : (
+            <div className="mt-4 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm text-slate-300">
+              本次 AI 将优先处理：
+              <span className="ml-2 font-semibold text-slate-100">
+                {plannedAiAssets.map((item) => `${item.symbol}(P${item.priority})`).join('、')}
+              </span>
+            </div>
+          )}
         </div>
       </section>
 
@@ -1433,6 +2075,581 @@ function App() {
           {trackingError}
         </div>
       )}
+
+      {scannerError && (
+        <div className="mt-6 rounded-[28px] border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+          {scannerError}
+        </div>
+      )}
+
+      <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Market Scanner</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">规则型市场扫描器</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              先用规则模型筛出潜力候选，再决定哪些值得加入关注池或升级成重点标的。这一步不调用大模型。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={runScanner}
+            disabled={scannerLoading}
+            className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {scannerLoading ? '扫描中...' : '运行扫描'}
+          </button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={runScannerRefinement}
+            disabled={scannerRefineLoading || scannerResults.length === 0}
+            className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {scannerRefineLoading ? 'AI 精筛中...' : 'AI 精筛前 10 名'}
+          </button>
+          <div className="rounded-2xl border border-white/8 bg-white/5 px-4 py-2 text-xs leading-5 text-slate-400">
+            规则扫描不烧 token；AI 精筛只会处理前 10 名候选，用于压缩进入重点池的数量。
+          </div>
+        </div>
+
+        <div className="mt-6 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">扫描模板</div>
+            <div className="mt-4 grid gap-3">
+              {(scannerTemplates.length ? scannerTemplates : []).map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  onClick={() => setScannerTemplateId(template.id)}
+                  className={`rounded-2xl border px-4 py-4 text-left transition ${
+                    scannerTemplateId === template.id
+                      ? 'border-sky-300/20 bg-sky-300/10'
+                      : 'border-white/8 bg-slate-950/30 hover:bg-white/6'
+                  }`}
+                >
+                  <div className="font-semibold text-slate-100">{template.name}</div>
+                  <div className="mt-1 text-xs leading-5 text-slate-400">{template.description}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-200">扫描范围</div>
+              <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+                本次将扫描 {scannerScanned || scannerMarkets.length ? scannerMarkets.length : 0} 个市场组
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {scannerMarketOptions.map((market) => (
+                <button
+                  key={market.value}
+                  type="button"
+                  onClick={() => toggleScannerMarket(market.value)}
+                  className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
+                    scannerMarkets.includes(market.value)
+                      ? 'border border-sky-300/20 bg-sky-300/10 text-sky-100'
+                      : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                  }`}
+                >
+                  {market.label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-5 rounded-2xl border border-white/8 bg-slate-950/30 p-4 text-sm leading-6 text-slate-300">
+              当前模板会在你选择的市场范围里批量拉取行情、计算技术指标、按规则打机会分，再输出优先候选名单。
+              <div className="mt-2 text-xs text-slate-500">
+                后续阶段会在这里叠加 AI 精筛和扫描验证反馈。
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex items-center justify-between">
+          <div className="text-sm text-slate-400">
+            {scannerResults.length > 0 ? `已扫描 ${scannerScanned} 只候选，当前展示前 ${scannerResults.length} 名` : '运行扫描后，这里会出现按机会分排序的候选榜单。'}
+          </div>
+        </div>
+        <div className="mt-4 rounded-[26px] border border-white/8 bg-white/4 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-slate-200">自动升级建议</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                这里会根据规则分、AI 分、置信度和是否推荐升级，自动给出建议的关注池优先级。先给建议，不做静默变更。
+              </div>
+            </div>
+            <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+              建议 {scannerUpgradeRecommendations.length} 只
+            </div>
+          </div>
+          {scannerUpgradeRecommendations.length > 0 ? (
+            <div className="mt-4 grid gap-3 xl:grid-cols-2">
+              {scannerUpgradeRecommendations.map((item) => (
+                <div key={`upgrade-${item.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-100">{item.symbol}</div>
+                      <div className="text-xs text-slate-500">{item.name}</div>
+                    </div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                      item.targetPriority === 3
+                        ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-200'
+                        : item.targetPriority === 2
+                        ? 'border-sky-300/20 bg-sky-300/10 text-sky-100'
+                        : 'border-white/10 bg-white/8 text-slate-200'
+                    }`}>
+                      建议升为 P{item.targetPriority}
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm leading-6 text-slate-300">{item.reason}</div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold">
+                    <span className={`rounded-full border px-2.5 py-1 ${metricTone(item.candidate.opportunityScore)}`}>
+                      规则分 {item.candidate.opportunityScore}
+                    </span>
+                    {item.refinement && (
+                      <span className={`rounded-full border px-2.5 py-1 ${metricTone(item.refinement.aiScore)}`}>
+                        AI 分 {item.refinement.aiScore}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await addTrackingAsset(item.symbol, {
+                          name: item.name,
+                          market: item.candidate.market,
+                          assetClass: item.candidate.assetClass,
+                        });
+                        await setPriorityLevel(item.symbol, item.targetPriority);
+                      }}
+                      disabled={trackingAction != null}
+                      className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50"
+                    >
+                      加入并设为 P{item.targetPriority}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addTrackingAsset(item.symbol, {
+                        name: item.name,
+                        market: item.candidate.market,
+                        assetClass: item.candidate.assetClass,
+                      })}
+                      disabled={trackingAction != null}
+                      className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+                    >
+                      先加入关注池
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addCandidatePoolItem(item.candidate, {
+                        targetPriority: item.targetPriority,
+                        status: 'candidate',
+                        note: item.reason,
+                        refinement: item.refinement,
+                      })}
+                      className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      加入候选池
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-4 text-sm text-slate-400">
+              跑完规则扫描后会先给出基础建议；跑完 AI 精筛后，会把更高质量的候选自动提升到 P2 / P3 建议层。
+            </div>
+          )}
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-2">
+          {scannerResults.length === 0 ? (
+            <div className="rounded-[26px] border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400 xl:col-span-2">
+              推荐先用“趋势延续扫描”或“突破扫描”试一轮，看看当前市场里哪些标的最值得进入候选池。
+            </div>
+          ) : scannerResults.map((candidate) => {
+            const refinement = refinementBySymbol.get(candidate.symbol);
+            return (
+            <div key={`${candidate.templateId}-${candidate.symbol}`} className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+              {refinement && (
+                <div className="mb-4 rounded-2xl border border-sky-300/15 bg-sky-300/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-sm font-semibold text-sky-100">AI 精筛复核</div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(refinement.aiScore)}`}>
+                      AI 分 {refinement.aiScore}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-sm leading-6 text-slate-200">{refinement.summary}</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <span className="rounded-full border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-100">
+                      {refinement.recommendation === 'focus' ? '建议重点跟踪' : refinement.recommendation === 'watch' ? '建议观察' : '建议跳过'}
+                    </span>
+                    <span className="rounded-full border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-slate-100">
+                      置信度 {refinement.conviction === 'high' ? '高' : refinement.conviction === 'medium' ? '中' : '低'}
+                    </span>
+                    {refinement.shouldPromote && (
+                      <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
+                        推荐升级为重点候选
+                      </span>
+                    )}
+                  </div>
+                  {refinement.risks.length > 0 && (
+                    <div className="mt-3 space-y-1 text-xs leading-5 text-slate-300">
+                      {refinement.risks.map((risk, index) => (
+                        <div key={`${candidate.symbol}-risk-${index}`}>• {risk}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-bold text-slate-100">{candidate.symbol}</div>
+                  <div className="text-sm text-slate-400">{candidate.name} · {candidate.market} · {candidate.templateName}</div>
+                </div>
+                <div className={`rounded-full border px-3 py-1 text-xs font-semibold ${metricTone(candidate.opportunityScore)}`}>
+                  机会分 {candidate.opportunityScore}
+                </div>
+              </div>
+              <div className="mt-3 text-sm leading-6 text-slate-300">{candidate.summary}</div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+                  风险 {candidate.riskScore}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+                  信号 {candidate.metrics.signalScore}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+                  RSI {candidate.metrics.rsi14 ?? 'N/A'}
+                </span>
+                <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-300">
+                  量比 {candidate.metrics.relativeVolume ?? 'N/A'}
+                </span>
+              </div>
+              <div className="mt-4 space-y-2 text-xs leading-5 text-slate-500">
+                {candidate.reasons.map((reason, index) => (
+                  <div key={`${candidate.symbol}-reason-${index}`}>• {reason}</div>
+                ))}
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => addTrackingAsset(candidate.symbol, {
+                    name: candidate.name,
+                    market: candidate.market,
+                    assetClass: candidate.assetClass,
+                  })}
+                  disabled={trackingAction === 'add'}
+                  className="rounded-2xl border border-sky-300/20 bg-sky-100 px-3 py-2 text-xs font-semibold text-slate-950 transition hover:bg-white disabled:opacity-50"
+                >
+                  加入关注池
+                </button>
+                <button
+                  type="button"
+                  onClick={() => addCandidatePoolItem(candidate, {
+                    targetPriority: 0,
+                    status: 'candidate',
+                    refinement,
+                  })}
+                  className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                >
+                  加入候选池
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    await addTrackingAsset(candidate.symbol, {
+                      name: candidate.name,
+                      market: candidate.market,
+                      assetClass: candidate.assetClass,
+                    });
+                    await setPriorityLevel(candidate.symbol, 1);
+                  }}
+                  disabled={trackingAction != null}
+                  className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
+                >
+                  加入并设为 P1
+                </button>
+                {refinementBySymbol.get(candidate.symbol)?.shouldPromote && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await addTrackingAsset(candidate.symbol, {
+                        name: candidate.name,
+                        market: candidate.market,
+                        assetClass: candidate.assetClass,
+                      });
+                      await setPriorityLevel(candidate.symbol, 2);
+                    }}
+                    disabled={trackingAction != null}
+                    className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50"
+                  >
+                    加入并设为 P2
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+          })}
+        </div>
+      </section>
+
+      <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Candidate Pool</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">候选池</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              候选池承接扫描器筛出来的机会票。它比关注池更轻，适合先观察、分层、淘汰，再把最值得做的标的升级进正式跟踪体系。
+            </p>
+          </div>
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+            候选 {sortedCandidatePool.length} 只
+          </div>
+        </div>
+        <div className="mt-6 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">候选池状态</div>
+            <div className="mt-4 grid gap-3 md:grid-cols-4">
+              <InfoCard title="待观察" value={`${candidatePool.filter((item) => item.status === 'candidate').length}`} subtitle="新进入候选池" icon={<Search className="h-4 w-4" />} />
+              <InfoCard title="观察中" value={`${candidatePool.filter((item) => item.status === 'watching').length}`} subtitle="等待更多确认" icon={<Waves className="h-4 w-4" />} />
+              <InfoCard title="已升级" value={`${candidatePool.filter((item) => item.status === 'upgraded').length}`} subtitle="已进入关注池" icon={<TrendingUp className="h-4 w-4" />} />
+              <InfoCard title="已淘汰" value={`${candidatePool.filter((item) => item.status === 'dismissed').length}`} subtitle="不再跟踪" icon={<ShieldAlert className="h-4 w-4" />} />
+            </div>
+            <div className="mt-4 rounded-2xl border border-white/8 bg-slate-950/30 p-4 text-sm leading-6 text-slate-300">
+              生成日报、周报、月报时，系统会把最近扫描和候选池摘要自动写进报告，帮助你先看“今天值得处理的新机会”。
+            </div>
+          </div>
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">候选池列表</div>
+            {sortedCandidatePool.length > 0 ? (
+              <div className="mt-4 space-y-3">
+                {sortedCandidatePool.slice(0, 8).map((item) => (
+                  <div key={`candidate-pool-${item.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-slate-100">{item.symbol}</div>
+                        <div className="text-xs text-slate-500">{item.name} · {item.templateName}</div>
+                      </div>
+                      <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${
+                        item.status === 'upgraded'
+                          ? 'border-emerald-300/20 bg-emerald-300/10 text-emerald-200'
+                          : item.status === 'watching'
+                          ? 'border-sky-300/20 bg-sky-300/10 text-sky-100'
+                          : item.status === 'dismissed'
+                          ? 'border-rose-300/20 bg-rose-300/10 text-rose-200'
+                          : 'border-white/10 bg-white/8 text-slate-200'
+                      }`}>
+                        {item.status === 'candidate' ? '待观察' : item.status === 'watching' ? '观察中' : item.status === 'upgraded' ? '已升级' : '已淘汰'}
+                      </div>
+                    </div>
+                    <div className="mt-3 text-sm leading-6 text-slate-300">{item.summary}</div>
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold">
+                      <span className={`rounded-full border px-2.5 py-1 ${metricTone(item.opportunityScore)}`}>规则分 {item.opportunityScore}</span>
+                      {item.aiScore != null && <span className={`rounded-full border px-2.5 py-1 ${metricTone(item.aiScore)}`}>AI 分 {item.aiScore}</span>}
+                      <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-300">建议 P{item.targetPriority || 1}</span>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => updateCandidatePoolStatus(item.symbol, 'watching')} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">标为观察中</button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await addTrackingAsset(item.symbol, {
+                            name: item.name,
+                            market: item.market,
+                            assetClass: item.assetClass,
+                          });
+                          await setPriorityLevel(item.symbol, item.targetPriority || 1);
+                          updateCandidatePoolStatus(item.symbol, 'upgraded', item.targetPriority || 1);
+                        }}
+                        disabled={trackingAction != null}
+                        className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50"
+                      >
+                        升级进关注池
+                      </button>
+                      <button type="button" onClick={() => updateCandidatePoolStatus(item.symbol, 'dismissed')} className="rounded-2xl border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-xs font-semibold text-rose-100 transition hover:bg-rose-300/15">淘汰</button>
+                      <button type="button" onClick={() => removeCandidatePoolItem(item.symbol)} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">移除</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-slate-400">先从扫描器里把值得继续看一眼的标的放进候选池，再决定哪些要升级成正式关注标的。</div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Scanner Feedback</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">扫描验证与反馈</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              这里会比较规则扫描、AI 复核以及 AI 推荐升级标的的后验表现，帮助我们知道哪套方法真正有效。
+            </p>
+          </div>
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+            快照 {scannerSnapshots.length} 份
+          </div>
+        </div>
+        <div className="mt-6 grid gap-3 md:grid-cols-3">
+          <InfoCard
+            title="规则筛选胜率"
+            value={`${scannerValidationSummary?.rulesOnly.winRate ?? 0}%`}
+            subtitle={`样本 ${scannerValidationSummary?.rulesOnly.count ?? 0} · 平均收益 ${formatNumber(scannerValidationSummary?.rulesOnly.avgReturn ?? 0)}%`}
+            icon={<Gauge className="h-4 w-4" />}
+          />
+          <InfoCard
+            title="AI 复核胜率"
+            value={`${scannerValidationSummary?.aiReviewed.winRate ?? 0}%`}
+            subtitle={`样本 ${scannerValidationSummary?.aiReviewed.count ?? 0} · 平均收益 ${formatNumber(scannerValidationSummary?.aiReviewed.avgReturn ?? 0)}%`}
+            icon={<BrainCircuit className="h-4 w-4" />}
+          />
+          <InfoCard
+            title="AI 推荐升级"
+            value={`${scannerValidationSummary?.aiPromoted.winRate ?? 0}%`}
+            subtitle={`样本 ${scannerValidationSummary?.aiPromoted.count ?? 0} · 风险收益比 ${formatNumber(scannerValidationSummary?.aiPromoted.riskReward ?? 0)}`}
+            icon={<TrendingUp className="h-4 w-4" />}
+          />
+        </div>
+        <div className="mt-6 grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">时间窗口验证</div>
+            <div className="mt-4 space-y-3">
+              {scannerHorizonSummaries.length > 0 ? scannerHorizonSummaries.map(([label, summary]) => (
+                <div key={label} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-100">{label} 窗口</div>
+                    <div className="text-xs text-slate-500">
+                      规则 {summary.rulesOnly.count} / AI {summary.aiReviewed.count} / 升级 {summary.aiPromoted.count}
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3">
+                    <div className="rounded-2xl border border-white/6 bg-white/5 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">规则</div>
+                      <div className="mt-2 text-xl font-black text-slate-50">{summary.rulesOnly.winRate}%</div>
+                      <div className="mt-1 text-xs text-slate-400">均收 {formatNumber(summary.rulesOnly.avgReturn)}% · RR {formatNumber(summary.rulesOnly.riskReward)}</div>
+                    </div>
+                    <div className="rounded-2xl border border-white/6 bg-white/5 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">AI复核</div>
+                      <div className="mt-2 text-xl font-black text-slate-50">{summary.aiReviewed.winRate}%</div>
+                      <div className="mt-1 text-xs text-slate-400">均收 {formatNumber(summary.aiReviewed.avgReturn)}% · RR {formatNumber(summary.aiReviewed.riskReward)}</div>
+                    </div>
+                    <div className="rounded-2xl border border-white/6 bg-white/5 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.24em] text-slate-500">AI升级</div>
+                      <div className="mt-2 text-xl font-black text-slate-50">{summary.aiPromoted.winRate}%</div>
+                      <div className="mt-1 text-xs text-slate-400">均收 {formatNumber(summary.aiPromoted.avgReturn)}% · RR {formatNumber(summary.aiPromoted.riskReward)}</div>
+                    </div>
+                  </div>
+                </div>
+              )) : (
+                <div className="text-sm text-slate-400">扫描样本积累后，这里会拆开展示 1日 / 5日 / 20日命中率与风险收益比。</div>
+              )}
+            </div>
+          </div>
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">模板效果对比</div>
+            <div className="mt-4 space-y-3">
+              {scannerTemplateSummaries.length > 0 ? scannerTemplateSummaries.map((template) => (
+                <div key={template.templateId} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-100">{template.templateName}</div>
+                      <div className="text-xs text-slate-500">样本 {template.count}</div>
+                    </div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(template.aiPromoted.winRate || template.aiReviewed.winRate || template.rulesOnly.winRate)}`}>
+                      规则 {template.rulesOnly.winRate}% / AI {template.aiReviewed.winRate}%
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-3 text-xs text-slate-400">
+                    <div>规则均收 {formatNumber(template.rulesOnly.avgReturn)}%</div>
+                    <div>AI复核均收 {formatNumber(template.aiReviewed.avgReturn)}%</div>
+                    <div>升级组均收 {formatNumber(template.aiPromoted.avgReturn)}%</div>
+                  </div>
+                </div>
+              )) : (
+                <div className="text-sm text-slate-400">不同扫描模板跑起来后，这里会比较突破、放量、超跌修复、趋势延续和 ETF 轮动的真实效果。</div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="mt-6 grid gap-4 xl:grid-cols-[0.96fr_1.04fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">最近一次扫描快照</div>
+            {latestScannerSnapshot ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-4 text-sm leading-6 text-slate-300">
+                  模板：<span className="font-semibold text-slate-100">{latestScannerSnapshot.templateName}</span>
+                  <br />
+                  时间：<span className="font-semibold text-slate-100">{new Date(latestScannerSnapshot.scannedAt).toLocaleString('zh-CN')}</span>
+                  <br />
+                  市场：<span className="font-semibold text-slate-100">{latestScannerSnapshot.markets.join(' / ')}</span>
+                  <br />
+                  扫描数量：<span className="font-semibold text-slate-100">{latestScannerSnapshot.scanned}</span>
+                </div>
+                <div className="space-y-3">
+                  {latestScannerSnapshot.candidates.slice(0, 5).map((candidate) => (
+                    <div key={`${latestScannerSnapshot.id}-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                        <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(candidate.opportunityScore)}`}>
+                          规则分 {candidate.opportunityScore}
+                        </div>
+                      </div>
+                      <div className="mt-2 text-xs text-slate-500">{candidate.summary}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-slate-400">运行过扫描后，这里会显示最近一次扫描快照。</div>
+            )}
+          </div>
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-200">后验表现</div>
+              <div className="text-xs text-slate-500">{scannerValidationLoading ? '验证中...' : '自动更新'}</div>
+            </div>
+            {latestValidatedSnapshot ? (
+              <div className="mt-4 space-y-3">
+                {latestValidatedSnapshot.validations.slice(0, 6).map((item) => (
+                  <div key={`${latestValidatedSnapshot.id}-${item.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-slate-100">{item.symbol}</div>
+                        <div className="text-xs text-slate-500">已跟踪 {formatNumber(item.elapsedDays, 1)} 天</div>
+                      </div>
+                      <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(item.currentReturnPct > 0 ? 78 : 36)}`}>
+                        {formatNumber(item.currentReturnPct)}%
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-slate-400">
+                      <div>最大回撤 {formatNumber(item.maxDrawdownPct)}%</div>
+                      <div>1日 {item.day1Qualified ? '已达标' : '未达标'}</div>
+                      <div>5日 {item.day5Qualified ? '已达标' : '未达标'}</div>
+                      <div>20日 {item.day20Qualified ? '已达标' : '未达标'}</div>
+                      <div>1日收益 {item.day1ReturnPct == null ? '待观察' : `${formatNumber(item.day1ReturnPct)}%`}</div>
+                      <div>5日收益 {item.day5ReturnPct == null ? '待观察' : `${formatNumber(item.day5ReturnPct)}%`}</div>
+                      <div>20日收益 {item.day20ReturnPct == null ? '待观察' : `${formatNumber(item.day20ReturnPct)}%`}</div>
+                    </div>
+                    {item.refinement && (
+                      <div className="mt-3 rounded-2xl border border-sky-300/15 bg-sky-300/10 p-3 text-xs leading-5 text-slate-200">
+                        AI 精筛：{item.refinement.summary}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-slate-400">运行过扫描并积累一段时间后，这里会开始显示真实收益、回撤和阶段命中率。</div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
