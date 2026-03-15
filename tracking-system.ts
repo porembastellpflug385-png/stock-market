@@ -132,6 +132,7 @@ type TrackingState = TrackingOverview;
 type RunTrackingCycleOptions = {
   scope: ReportScope;
   trigger?: 'manual' | 'cron';
+  mode?: 'fast' | 'full';
   initialState?: TrackingOverview;
   persist?: boolean;
   fetchAsset: (symbol: string) => Promise<{
@@ -571,6 +572,20 @@ const buildSummaryReport = (
   ].join('\n');
 };
 
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} 超时（>${Math.round(ms / 1000)}s）`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
+
 const runWithConcurrency = async <T, R>(
   items: T[],
   limit: number,
@@ -588,6 +603,7 @@ const runWithConcurrency = async <T, R>(
 export const runTrackingCycle = async ({
   scope,
   trigger = 'manual',
+  mode = 'full',
   initialState,
   persist = true,
   fetchAsset,
@@ -598,8 +614,12 @@ export const runTrackingCycle = async ({
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
   const settledReports = await runWithConcurrency(state.watchlist, 3, async (asset) => {
-    const bundle = await fetchAsset(asset.symbol);
-    const analysis = await generateAnalysis(asset.symbol, bundle);
+    const bundle = await withTimeout(fetchAsset(asset.symbol), 12000, `${asset.symbol} 行情抓取`);
+    const analysis = await withTimeout(
+      generateAnalysis(asset.symbol, bundle),
+      12000,
+      `${asset.symbol} 分析生成`,
+    );
     const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
     const reportDate = new Date().toISOString();
     const next: TrackingReportRecord = {
@@ -638,22 +658,24 @@ export const runTrackingCycle = async ({
   }
 
   state.latestReports = nextReports;
-  state.validations = nextValidations.slice(0, 200);
+  if (mode === 'full') {
+    state.validations = nextValidations.slice(0, 200);
 
-  state.portfolios.forEach((portfolio) => {
-    const weights = desiredWeightsForStrategy(
-      portfolio.strategyId,
-      nextReports,
-      state.watchlist,
-    );
-    rebalancePortfolio(portfolio, weights, nextReports);
-  });
+    state.portfolios.forEach((portfolio) => {
+      const weights = desiredWeightsForStrategy(
+        portfolio.strategyId,
+        nextReports,
+        state.watchlist,
+      );
+      rebalancePortfolio(portfolio, weights, nextReports);
+    });
+  }
 
   state.generatedReports.unshift({
     id: `${scope}-${Date.now()}`,
     scope,
     generatedAt: new Date().toISOString(),
-    title: `${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · ${new Date().toLocaleDateString('zh-CN')}`,
+    title: `${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · ${new Date().toLocaleDateString('zh-CN')}${mode === 'fast' ? '（快速版）' : ''}`,
     markdown: buildSummaryReport(scope, nextReports, state.portfolios, state.validations, failedSymbols),
     trigger,
   });

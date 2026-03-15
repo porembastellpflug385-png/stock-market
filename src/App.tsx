@@ -971,6 +971,7 @@ function App() {
   const [trackingOverview, setTrackingOverview] = useState<TrackingOverview | null>(null);
   const [trackingLoading, setTrackingLoading] = useState(false);
   const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [trackingStatus, setTrackingStatus] = useState<string | null>(null);
   const [trackingAction, setTrackingAction] = useState<string | null>(null);
   const [scannerTemplates, setScannerTemplates] = useState<ScannerTemplate[]>([]);
   const [scannerTemplateId, setScannerTemplateId] = useState<ScannerTemplateId>('trend-follow');
@@ -1468,6 +1469,7 @@ function App() {
   const loadTrackingOverview = async () => {
     setTrackingLoading(true);
     setTrackingError(null);
+    setTrackingStatus(null);
     try {
       const overview = readStoredTrackingOverview();
       commitTrackingOverview(overview);
@@ -1608,6 +1610,7 @@ function App() {
   ) => {
     setTrackingAction('add');
     setTrackingError(null);
+    setTrackingStatus(null);
     try {
       const nextSymbol = symbol.trim().toUpperCase();
       const current = getLatestTrackingOverview();
@@ -1652,6 +1655,7 @@ function App() {
   const removeTracking = async (symbol: string) => {
     setTrackingAction(symbol);
     setTrackingError(null);
+    setTrackingStatus(null);
     try {
       const current = getLatestTrackingOverview();
       commitTrackingOverview({
@@ -1668,6 +1672,7 @@ function App() {
   const setPriorityLevel = async (symbol: string, priority: number) => {
     setTrackingAction(`priority-${symbol}-${priority}`);
     setTrackingError(null);
+    setTrackingStatus(null);
     try {
       const current = getLatestTrackingOverview();
       const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
@@ -1775,6 +1780,7 @@ function App() {
   const runTrackingScope = async (scope: 'daily' | 'weekly' | 'monthly') => {
     setTrackingAction(scope);
     setTrackingError(null);
+    setTrackingStatus(null);
     try {
       const currentOverview = getLatestTrackingOverview();
       if ((currentOverview.watchlist?.length || 0) === 0) {
@@ -1785,7 +1791,7 @@ function App() {
       const res = await fetch('/api/tracking/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, state: compactOverview }),
+        body: JSON.stringify({ scope, mode: 'fast', state: compactOverview }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
@@ -1804,6 +1810,7 @@ function App() {
         ];
       }
       commitTrackingOverview(overview);
+      setTrackingStatus(`已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`);
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {
@@ -2451,6 +2458,12 @@ function App() {
       {trackingError && (
         <div className="mt-6 rounded-[28px] border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">
           {trackingError}
+        </div>
+      )}
+
+      {trackingStatus && (
+        <div className="mt-6 rounded-[28px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-200">
+          {trackingStatus}
         </div>
       )}
 

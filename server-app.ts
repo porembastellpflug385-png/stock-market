@@ -647,6 +647,7 @@ const runTrackingWorkflow = async (
   scope: ReportScope,
   trigger: 'manual' | 'cron' = 'manual',
   providedState?: ReturnType<typeof normalizeTrackingState>,
+  mode: 'fast' | 'full' = trigger === 'manual' ? 'fast' : 'full',
 ) => {
   const preferences: AnalysisPreferences = {
     ...defaultPreferences,
@@ -664,6 +665,7 @@ const runTrackingWorkflow = async (
   return runTrackingCycle({
     scope,
     trigger,
+    mode,
     initialState: overview,
     persist: !providedState,
     fetchAsset: async (symbol) => {
@@ -1240,7 +1242,8 @@ export function createApp() {
     try {
       const scope = (String(req.body?.scope || 'daily') as ReportScope);
       const providedState = req.body?.state ? normalizeTrackingState(req.body.state) : null;
-      const state = await runTrackingWorkflow(scope, 'manual', providedState || undefined);
+      const mode = String(req.body?.mode || 'fast') === 'full' ? 'full' : 'fast';
+      const state = await runTrackingWorkflow(scope, 'manual', providedState || undefined, mode);
       res.json(state);
     } catch (error: any) {
       console.error("Error running tracking cycle:", error);
