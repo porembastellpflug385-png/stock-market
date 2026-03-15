@@ -571,6 +571,20 @@ const buildSummaryReport = (
   ].join('\n');
 };
 
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+) => {
+  const results: Array<PromiseSettledResult<R>> = [];
+  for (let index = 0; index < items.length; index += limit) {
+    const batch = items.slice(index, index + limit);
+    const settled = await Promise.allSettled(batch.map(worker));
+    results.push(...settled);
+  }
+  return results;
+};
+
 export const runTrackingCycle = async ({
   scope,
   trigger = 'manual',
@@ -583,34 +597,40 @@ export const runTrackingCycle = async ({
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
+  const settledReports = await runWithConcurrency(state.watchlist, 3, async (asset) => {
+    const bundle = await fetchAsset(asset.symbol);
+    const analysis = await generateAnalysis(asset.symbol, bundle);
+    const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
+    const reportDate = new Date().toISOString();
+    const next: TrackingReportRecord = {
+      symbol: asset.symbol,
+      reportDate,
+      quote: bundle.quote,
+      indicators: bundle.packet.snapshot,
+      analysis,
+      structured,
+    };
 
-  for (const asset of state.watchlist) {
-    try {
-      const bundle = await fetchAsset(asset.symbol);
-      const analysis = await generateAnalysis(asset.symbol, bundle);
-      const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
-      const reportDate = new Date().toISOString();
-      const next: TrackingReportRecord = {
-        symbol: asset.symbol,
-        reportDate,
-        quote: bundle.quote,
-        indicators: bundle.packet.snapshot,
-        analysis,
-        structured,
-      };
+    return { asset, next };
+  });
 
+  settledReports.forEach((entry, index) => {
+    const asset = state.watchlist[index];
+    if (entry.status === 'fulfilled') {
+      const { next } = entry.value;
       const previous = state.latestReports.find((item) => item.symbol === asset.symbol);
       if (previous) {
         nextValidations.unshift(createValidation(previous, next));
       }
       nextReports.push(next);
-    } catch (error: any) {
-      failedSymbols.push({
-        symbol: asset.symbol,
-        error: error?.message || '未知错误',
-      });
+      return;
     }
-  }
+
+    failedSymbols.push({
+      symbol: asset.symbol,
+      error: entry.reason?.message || '未知错误',
+    });
+  });
 
   if (nextReports.length === 0) {
     const details = failedSymbols.slice(0, 5).map((item) => `${item.symbol}: ${item.error}`).join('；');

@@ -536,7 +536,12 @@ const formatNumber = (value?: number | null) => {
   return new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 }).format(value);
 };
 
-const buildFallbackAnalysis = (ticker: string, bundle: Awaited<ReturnType<typeof fetchMarketBundle>>, preferences: AnalysisPreferences) => {
+type AnalysisBundleLike = {
+  quote: Awaited<ReturnType<typeof fetchMarketBundle>>['quote'];
+  packet: Awaited<ReturnType<typeof fetchMarketBundle>>['packet'];
+};
+
+const buildFallbackAnalysis = (ticker: string, bundle: AnalysisBundleLike, preferences: AnalysisPreferences) => {
   const { snapshot } = { snapshot: bundle.packet.snapshot };
   const focus = preferences.customFocus?.trim() || '未指定额外关注点';
   return [
@@ -567,7 +572,7 @@ const buildFallbackAnalysis = (ticker: string, bundle: Awaited<ReturnType<typeof
   ].join('\n');
 };
 
-const buildPrompt = (ticker: string, bundle: Awaited<ReturnType<typeof fetchMarketBundle>>, preferences: AnalysisPreferences) => {
+const buildPrompt = (ticker: string, bundle: AnalysisBundleLike, preferences: AnalysisPreferences) => {
   const { quote, packet } = bundle;
   const { snapshot, series } = packet;
   const recentSeries = series.slice(-20);
@@ -619,7 +624,7 @@ ${recentSeries.map((item) => `${item.date} | ${item.close} | ${item.rsi14 ?? 'N/
 
 const generateInstitutionalAnalysis = async (
   ticker: string,
-  bundle: Awaited<ReturnType<typeof fetchMarketBundle>>,
+  bundle: AnalysisBundleLike,
   preferences: AnalysisPreferences,
 ) => {
   const prompt = buildPrompt(ticker, bundle, preferences);
@@ -677,12 +682,11 @@ const runTrackingWorkflow = async (
         packet: bundle.packet,
       };
     },
-    generateAnalysis: async (symbol) => {
-      const fullBundle = await fetchMarketBundle(symbol, preferences.timeframe);
+    generateAnalysis: async (symbol, bundle) => {
       if (!prioritizedSet.has(symbol)) {
-        return buildFallbackAnalysis(symbol, fullBundle, preferences);
+        return buildFallbackAnalysis(symbol, bundle, preferences);
       }
-      return generateInstitutionalAnalysis(symbol, fullBundle, preferences);
+      return generateInstitutionalAnalysis(symbol, bundle, preferences);
     },
   });
 };
