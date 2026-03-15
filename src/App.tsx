@@ -155,10 +155,11 @@ type ProviderDebugInfo = {
 };
 
 const providerStorageKey = 'market-analyzer-provider-config';
+const trackingWatchlistStorageKey = 'market-analyzer-tracking-watchlist';
 const defaultProviderConfig: ProviderConfig = {
   baseUrl: '',
   apiKey: '',
-  model: 'gpt-4.1-mini',
+  model: 'gpt-5.4',
 };
 
 const dimensionOptions: Array<{ value: AnalysisDimension; label: string }> = [
@@ -219,6 +220,26 @@ const getPayloadError = (payload: any, fallback: string) => {
   if (typeof payload?.error === 'string' && payload.error.trim()) return payload.error;
   if (typeof payload?.message === 'string' && payload.message.trim()) return payload.message;
   return fallback;
+};
+
+const readStoredTrackingWatchlist = (): TrackingAsset[] => {
+  try {
+    const raw = window.localStorage.getItem(trackingWatchlistStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && typeof item.symbol === 'string');
+  } catch {
+    return [];
+  }
+};
+
+const persistTrackingWatchlist = (watchlist: TrackingAsset[]) => {
+  if (watchlist.length === 0) {
+    window.localStorage.removeItem(trackingWatchlistStorageKey);
+    return;
+  }
+  window.localStorage.setItem(trackingWatchlistStorageKey, JSON.stringify(watchlist));
 };
 
 const normalizeSearchResults = (payload: any) => {
@@ -979,6 +1000,43 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const restoreTrackingWatchlist = async (savedWatchlist: TrackingAsset[]) => {
+    for (const asset of [...savedWatchlist].reverse()) {
+      const addRes = await fetch('/api/tracking/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: asset.symbol,
+          tags: asset.tags.filter((tag) => tag !== '重点'),
+          notes: asset.notes,
+        }),
+      });
+      const addPayload = await readApiPayload(addRes);
+      if (!addRes.ok) {
+        throw new Error(getPayloadError(addPayload, `恢复 ${asset.symbol} 失败`));
+      }
+
+      if (asset.priority > 0) {
+        const priorityRes = await fetch(`/api/tracking/watchlist/${encodeURIComponent(asset.symbol)}/priority`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ priority: asset.priority }),
+        });
+        const priorityPayload = await readApiPayload(priorityRes);
+        if (!priorityRes.ok) {
+          throw new Error(getPayloadError(priorityPayload, `恢复 ${asset.symbol} 优先级失败`));
+        }
+      }
+    }
+
+    const overviewRes = await fetch('/api/tracking/overview');
+    const overviewPayload = await readApiPayload(overviewRes);
+    if (!overviewRes.ok) {
+      throw new Error(getPayloadError(overviewPayload, '恢复关注池后刷新失败'));
+    }
+    return overviewPayload as TrackingOverview;
+  };
+
   const loadTrackingOverview = async () => {
     setTrackingLoading(true);
     setTrackingError(null);
@@ -988,7 +1046,20 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, '加载跟踪系统失败'));
       }
-      setTrackingOverview(payload as TrackingOverview);
+      const overview = payload as TrackingOverview;
+      if (overview.watchlist?.length) {
+        setTrackingOverview(overview);
+        persistTrackingWatchlist(overview.watchlist);
+      } else {
+        const savedWatchlist = readStoredTrackingWatchlist();
+        if (savedWatchlist.length > 0) {
+          const restoredOverview = await restoreTrackingWatchlist(savedWatchlist);
+          setTrackingOverview(restoredOverview);
+          persistTrackingWatchlist(restoredOverview.watchlist || savedWatchlist);
+        } else {
+          setTrackingOverview(overview);
+        }
+      }
     } catch (trackingLoadError: any) {
       setTrackingError(trackingLoadError.message || '加载跟踪系统失败');
     } finally {
@@ -1009,7 +1080,9 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, '加入关注池失败'));
       }
-      setTrackingOverview(payload as TrackingOverview);
+      const overview = payload as TrackingOverview;
+      setTrackingOverview(overview);
+      persistTrackingWatchlist(overview.watchlist || []);
       setSearchQuery('');
       setSearchResults([]);
     } catch (trackingActionError: any) {
@@ -1030,7 +1103,9 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, '移除关注池失败'));
       }
-      setTrackingOverview(payload as TrackingOverview);
+      const overview = payload as TrackingOverview;
+      setTrackingOverview(overview);
+      persistTrackingWatchlist(overview.watchlist || []);
     } catch (trackingActionError: any) {
       setTrackingError(trackingActionError.message || '移除关注池失败');
     } finally {
@@ -1051,7 +1126,9 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, '更新优先级失败'));
       }
-      setTrackingOverview(payload as TrackingOverview);
+      const overview = payload as TrackingOverview;
+      setTrackingOverview(overview);
+      persistTrackingWatchlist(overview.watchlist || []);
     } catch (trackingPriorityError: any) {
       setTrackingError(trackingPriorityError.message || '更新优先级失败');
     } finally {
@@ -1063,6 +1140,15 @@ function App() {
     setTrackingAction(scope);
     setTrackingError(null);
     try {
+      if ((trackingOverview?.watchlist?.length || 0) === 0) {
+        const savedWatchlist = readStoredTrackingWatchlist();
+        if (savedWatchlist.length > 0) {
+          const restoredOverview = await restoreTrackingWatchlist(savedWatchlist);
+          setTrackingOverview(restoredOverview);
+          persistTrackingWatchlist(restoredOverview.watchlist || savedWatchlist);
+        }
+      }
+
       const res = await fetch('/api/tracking/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1072,7 +1158,9 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, `生成${scope}报告失败`));
       }
-      setTrackingOverview(payload as TrackingOverview);
+      const overview = payload as TrackingOverview;
+      setTrackingOverview(overview);
+      persistTrackingWatchlist(overview.watchlist || []);
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {

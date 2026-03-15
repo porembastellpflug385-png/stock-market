@@ -25,7 +25,7 @@ const API_CONFIG = {
   baseUrl: "https://ai.scd666.com/v1/chat/completions",
 };
 
-const TEXT_MODEL = "deepseek-v3.2-exp";
+const TEXT_MODEL = "gpt-5.4";
 const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 
 const defaultServerProvider = {

@@ -23,7 +23,7 @@ npm install
 ```bash
 OPENAI_API_KEY=your_key_here
 OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-5.4
 ```
 
 不配置也可以运行，系统会自动退化为规则引擎分析。
