@@ -788,7 +788,7 @@ export function createApp() {
   app.post("/api/scanner/run", async (req, res) => {
     try {
       const templateId = String(req.body?.templateId || 'trend-follow') as ScannerTemplateId;
-      const limit = Math.max(5, Math.min(30, Number(req.body?.limit || 12)));
+      const limit = Math.max(10, Math.min(80, Number(req.body?.limit || 40)));
       const requestedMarkets = Array.isArray(req.body?.markets)
         ? req.body.markets.map((item: unknown) => String(item).toUpperCase())
         : [];

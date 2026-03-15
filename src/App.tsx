@@ -275,6 +275,11 @@ type CandidatePoolItem = {
   addedAt: string;
 };
 
+type ScannerHighQualityCandidate = {
+  candidate: ScannerCandidate;
+  refinement: ScannerRefinement;
+};
+
 type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
@@ -895,7 +900,7 @@ const openPrintableReport = ({
 };
 
 function App() {
-  const [activeView, setActiveView] = useState<'analyzer' | 'tracking'>('analyzer');
+  const [activeView, setActiveView] = useState<'analyzer' | 'tracking' | 'scanner'>('analyzer');
   const [ticker, setTicker] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -1219,6 +1224,42 @@ function App() {
       return;
     }
 
+    if (activeView === 'scanner') {
+      const verifiedAsset = await verifyTrackingAsset(symbolToUse);
+      const verifiedQuote = verifiedAsset.quote as Quote;
+      addCandidatePoolItem(
+        {
+          symbol: symbolToUse.toUpperCase(),
+          name: resolvedMeta?.name || verifiedQuote.shortName || verifiedQuote.longName || symbolToUse.toUpperCase(),
+          market: (resolvedMeta?.market as ScannerMarket) || inferTrackingMarket(symbolToUse.toUpperCase()) as ScannerMarket,
+          assetClass: (resolvedMeta?.assetClass as ScannerCandidate['assetClass']) || inferTrackingAssetClass(symbolToUse.toUpperCase()) as ScannerCandidate['assetClass'],
+          templateId: scannerTemplateId,
+          templateName: scannerTemplates.find((item) => item.id === scannerTemplateId)?.name || '手动加入',
+          opportunityScore: 60,
+          riskScore: 45,
+          actionBias: 'watch',
+          summary: '手动加入扫描候选池，等待后续规则/AI 进一步确认。',
+          reasons: ['来自手动输入，尚未经过完整扫描模板筛选。'],
+          metrics: {
+            price: Number(verifiedQuote.regularMarketPrice || 0),
+            changePercent: Number(verifiedQuote.regularMarketChangePercent || 0),
+            signalScore: 60,
+            rsi14: null,
+            relativeVolume: null,
+            annualizedVolatility: null,
+            weekReturn: null,
+            monthReturn: null,
+          },
+        },
+        {
+          status: 'candidate',
+          targetPriority: 1,
+          note: '手动加入扫描候选池',
+        },
+      );
+      return;
+    }
+
     setTicker(symbolToUse);
     runWorkflow(symbolToUse);
   };
@@ -1397,7 +1438,7 @@ function App() {
         body: JSON.stringify({
           templateId: scannerTemplateId,
           markets: scannerMarkets,
-          limit: 12,
+          limit: 40,
         }),
       });
       const payload = await readApiPayload(res);
@@ -1439,7 +1480,7 @@ function App() {
     setScannerRefineLoading(true);
     setScannerError(null);
     try {
-      const candidates = scannerResults.slice(0, 10).map((item) => ({
+      const candidates = scannerResults.slice(0, 24).map((item) => ({
         symbol: item.symbol,
         name: item.name,
         market: item.market,
@@ -1455,7 +1496,7 @@ function App() {
       const res = await fetch('/api/scanner/refine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidates, topN: 6 }),
+        body: JSON.stringify({ candidates, topN: 8 }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
@@ -1891,6 +1932,21 @@ function App() {
       return right.candidate.opportunityScore - left.candidate.opportunityScore;
     })
     .slice(0, 8);
+  const scannerHighQualityCandidates: ScannerHighQualityCandidate[] = scannerResults
+    .map((candidate) => {
+      const refinement = refinementBySymbol.get(candidate.symbol);
+      if (!refinement) return null;
+      if (refinement.aiScore < 72) return null;
+      if (refinement.recommendation === 'skip') return null;
+      return { candidate, refinement };
+    })
+    .filter((item): item is ScannerHighQualityCandidate => Boolean(item))
+    .sort((left, right) => {
+      const qualityLeft = left.refinement.aiScore * 0.58 + left.candidate.opportunityScore * 0.42;
+      const qualityRight = right.refinement.aiScore * 0.58 + right.candidate.opportunityScore * 0.42;
+      return qualityRight - qualityLeft;
+    })
+    .slice(0, 8);
   const allValidations = trackingOverview?.validations || [];
   const reportBySymbol = new Map(latestTrackingReports.map((item) => [item.symbol, item]));
   const watchlistBySymbol = new Map(sortedWatchlist.map((item) => [item.symbol, item]));
@@ -1980,6 +2036,262 @@ function App() {
       fitScore,
     };
   }).sort((left, right) => right.fitScore - left.fitScore);
+
+  const renderScannerView = () => (
+    <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {scannerError && (
+        <div className="rounded-[28px] border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+          {scannerError}
+        </div>
+      )}
+
+      <section className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Scanner Workspace</p>
+          <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-50">市场扫描工作台</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+            规则层先全量扫市场池，再让 AI 只看前 24 名候选，最后收敛成前 8 个高质量机会。这样既保留覆盖面，也把 token 花在最值得复核的地方。
+          </p>
+          <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <InfoCard title="规则候选" value={`${scannerResults.length} 只`} subtitle="规则全量扫后的前排结果" icon={<Search className="h-4 w-4" />} />
+            <InfoCard title="AI 复核" value={`${scannerRefinements.length} 只`} subtitle="只处理前 24 名候选" icon={<BrainCircuit className="h-4 w-4" />} />
+            <InfoCard title="高质量候选" value={`${scannerHighQualityCandidates.length} 只`} subtitle="最终聚焦前 5-10 个机会" icon={<TrendingUp className="h-4 w-4" />} />
+            <InfoCard title="候选池" value={`${sortedCandidatePool.length} 只`} subtitle="留给后续观察和升级" icon={<FileText className="h-4 w-4" />} />
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.98))] p-6 text-white shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">Workflow</p>
+              <h3 className="mt-2 text-xl font-bold text-slate-50">规则全量扫 → AI 精筛</h3>
+            </div>
+            <RefreshCw className={`h-5 w-5 text-sky-200 ${scannerLoading || scannerRefineLoading ? 'animate-spin' : ''}`} />
+          </div>
+          <div className="mt-6 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={runScanner}
+              disabled={scannerLoading}
+              className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {scannerLoading ? '规则扫描中...' : '规则全量扫描'}
+            </button>
+            <button
+              type="button"
+              onClick={runScannerRefinement}
+              disabled={scannerRefineLoading || scannerResults.length === 0}
+              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {scannerRefineLoading ? 'AI 精筛中...' : 'AI 精筛前 24 名'}
+            </button>
+          </div>
+          <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">
+            当前规则层返回前 40 名候选；AI 只看前 24 名，再压缩出前 8 个更值得你直接处理的标的。
+            <div className="mt-2 text-xs text-slate-400">
+              规则扫描不烧 token，只有“AI 精筛前 24 名”会调用 `gpt-5.4`。
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">规则层</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{scannerResults.length}</div>
+              <div className="text-xs text-slate-400">候选展示上限 40 只</div>
+            </div>
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">AI 层</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{scannerRefinements.length}</div>
+              <div className="text-xs text-slate-400">候选前 24 名进入 AI 复核</div>
+            </div>
+            <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
+              <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">最终输出</div>
+              <div className="mt-2 text-2xl font-black text-slate-50">{scannerHighQualityCandidates.length}</div>
+              <div className="text-xs text-slate-400">高质量候选建议优先进入候选池</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-8 grid gap-4 xl:grid-cols-[0.88fr_1.12fr]">
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <div className="text-sm font-semibold text-slate-200">扫描模板与范围</div>
+          <div className="mt-4 grid gap-3">
+            {(scannerTemplates.length ? scannerTemplates : []).map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                onClick={() => setScannerTemplateId(template.id)}
+                className={`rounded-2xl border px-4 py-4 text-left transition ${
+                  scannerTemplateId === template.id
+                    ? 'border-sky-300/20 bg-sky-300/10'
+                    : 'border-white/8 bg-slate-950/30 hover:bg-white/6'
+                }`}
+              >
+                <div className="font-semibold text-slate-100">{template.name}</div>
+                <div className="mt-1 text-xs leading-5 text-slate-400">{template.description}</div>
+              </button>
+            ))}
+          </div>
+          <div className="mt-5 flex flex-wrap gap-2">
+            {scannerMarketOptions.map((market) => (
+              <button
+                key={market.value}
+                type="button"
+                onClick={() => toggleScannerMarket(market.value)}
+                className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
+                  scannerMarkets.includes(market.value)
+                    ? 'border border-sky-300/20 bg-sky-300/10 text-sky-100'
+                    : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                {market.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm font-semibold text-slate-200">高质量候选</div>
+              <div className="mt-1 text-xs leading-5 text-slate-500">
+                这一组是规则层与 AI 层共同认可的前排机会，适合优先进入候选池或直接升级进关注池。
+              </div>
+            </div>
+            <div className="rounded-full border border-white/8 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+              输出 {scannerHighQualityCandidates.length} 只
+            </div>
+          </div>
+          {scannerHighQualityCandidates.length > 0 ? (
+            <div className="mt-4 grid gap-3 xl:grid-cols-2">
+              {scannerHighQualityCandidates.map(({ candidate, refinement }) => (
+                <div key={`hq-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                      <div className="text-xs text-slate-500">{candidate.name} · {candidate.templateName}</div>
+                    </div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(Math.round(refinement.aiScore * 0.58 + candidate.opportunityScore * 0.42))}`}>
+                      综合 {Math.round(refinement.aiScore * 0.58 + candidate.opportunityScore * 0.42)}
+                    </div>
+                  </div>
+                  <div className="mt-3 text-sm leading-6 text-slate-300">{refinement.summary}</div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold">
+                    <span className={`rounded-full border px-2.5 py-1 ${metricTone(candidate.opportunityScore)}`}>规则分 {candidate.opportunityScore}</span>
+                    <span className={`rounded-full border px-2.5 py-1 ${metricTone(refinement.aiScore)}`}>AI 分 {refinement.aiScore}</span>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-300">置信度 {refinement.conviction === 'high' ? '高' : refinement.conviction === 'medium' ? '中' : '低'}</span>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addCandidatePoolItem(candidate, {
+                        targetPriority: refinement.shouldPromote ? 2 : 1,
+                        status: 'candidate',
+                        refinement,
+                      })}
+                      className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      加入候选池
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await addTrackingAsset(candidate.symbol, {
+                          name: candidate.name,
+                          market: candidate.market,
+                          assetClass: candidate.assetClass,
+                        });
+                        await setPriorityLevel(candidate.symbol, refinement.shouldPromote ? 2 : 1);
+                      }}
+                      disabled={trackingAction != null}
+                      className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50"
+                    >
+                      加入关注池
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-4 text-sm text-slate-400">先运行规则全量扫描，再执行 AI 精筛。这里会显示最终前 5-10 个高质量候选。</div>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-8 grid gap-8 xl:grid-cols-[1fr_1fr]">
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <div className="text-sm font-semibold text-slate-200">规则候选榜单</div>
+          <div className="mt-1 text-xs text-slate-500">全量规则扫描后的前排候选，适合人工再看一轮。</div>
+          {scannerResults.length > 0 ? (
+            <div className="mt-4 space-y-3">
+              {scannerResults.slice(0, 12).map((candidate) => {
+                const refinement = refinementBySymbol.get(candidate.symbol);
+                return (
+                  <div key={`scanner-result-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                        <div className="text-xs text-slate-500">{candidate.name} · {candidate.market}</div>
+                      </div>
+                      <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(candidate.opportunityScore)}`}>
+                        规则分 {candidate.opportunityScore}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-sm leading-6 text-slate-300">{candidate.summary}</div>
+                    {refinement && (
+                      <div className="mt-3 rounded-2xl border border-sky-300/15 bg-sky-300/10 p-3 text-xs leading-5 text-slate-200">
+                        AI：{refinement.summary}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="mt-4 text-sm text-slate-400">运行扫描后，这里会展示规则层最强的一批候选。</div>
+          )}
+        </div>
+
+        <div className="space-y-8">
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <div className="text-sm font-semibold text-slate-200">候选池</div>
+            {sortedCandidatePool.length > 0 ? (
+              <div className="mt-4 space-y-3">
+                {sortedCandidatePool.slice(0, 8).map((item) => (
+                  <div key={`candidate-pool-view-${item.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold text-slate-100">{item.symbol}</div>
+                        <div className="text-xs text-slate-500">{item.name} · {item.templateName}</div>
+                      </div>
+                      <div className="rounded-full border border-white/10 bg-white/8 px-2.5 py-1 text-xs font-semibold text-slate-200">
+                        {item.status === 'candidate' ? '待观察' : item.status === 'watching' ? '观察中' : item.status === 'upgraded' ? '已升级' : '已淘汰'}
+                      </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button type="button" onClick={() => updateCandidatePoolStatus(item.symbol, 'watching')} className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">标为观察中</button>
+                      <button type="button" onClick={() => updateCandidatePoolStatus(item.symbol, 'dismissed')} className="rounded-2xl border border-rose-300/20 bg-rose-300/10 px-3 py-2 text-xs font-semibold text-rose-100 transition hover:bg-rose-300/15">淘汰</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-slate-400">把扫描结果里的高质量机会先放进候选池，再决定哪些值得升级进关注池。</div>
+            )}
+          </div>
+
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <div className="text-sm font-semibold text-slate-200">扫描验证摘要</div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <InfoCard title="规则胜率" value={`${scannerValidationSummary?.rulesOnly.winRate ?? 0}%`} subtitle={`样本 ${scannerValidationSummary?.rulesOnly.count ?? 0}`} icon={<Gauge className="h-4 w-4" />} />
+              <InfoCard title="AI 胜率" value={`${scannerValidationSummary?.aiReviewed.winRate ?? 0}%`} subtitle={`样本 ${scannerValidationSummary?.aiReviewed.count ?? 0}`} icon={<BrainCircuit className="h-4 w-4" />} />
+              <InfoCard title="升级组" value={`${scannerValidationSummary?.aiPromoted.winRate ?? 0}%`} subtitle={`样本 ${scannerValidationSummary?.aiPromoted.count ?? 0}`} icon={<TrendingUp className="h-4 w-4" />} />
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
 
   const renderTrackingView = () => (
     <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -2973,6 +3285,13 @@ function App() {
             >
               跟踪系统
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveView('scanner')}
+              className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${activeView === 'scanner' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'}`}
+            >
+              市场扫描
+            </button>
           </div>
 
           <form onSubmit={handleSearch} className="relative w-full lg:w-auto" ref={searchRef}>
@@ -2991,7 +3310,7 @@ function App() {
                 disabled={loading || trackingAction != null}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-[18px] border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading || trackingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : activeView === 'tracking' ? '加入关注池' : '启动分析'}
+                {loading || trackingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : activeView === 'tracking' ? '加入关注池' : activeView === 'scanner' ? '加入候选池' : '启动分析'}
               </button>
             </div>
 
@@ -3020,7 +3339,7 @@ function App() {
           </form>
         </div>
       </header>
-      {activeView === 'tracking' ? renderTrackingView() : <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {activeView === 'tracking' ? renderTrackingView() : activeView === 'scanner' ? renderScannerView() : <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <section className="mb-8 grid gap-4 lg:grid-cols-[1.35fr_0.9fr]">
           <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
