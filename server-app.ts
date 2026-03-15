@@ -63,6 +63,106 @@ type ThirdPartyDebug = {
   responsePreview?: string;
 };
 
+type AliasAsset = {
+  symbol: string;
+  shortname: string;
+  longname: string;
+  exchange: string;
+  aliases: string[];
+};
+
+const curatedAssets: AliasAsset[] = [
+  {
+    symbol: 'BTC-USD',
+    shortname: 'Bitcoin USD',
+    longname: 'Bitcoin / US Dollar',
+    exchange: 'CRYPTO',
+    aliases: ['bitcoin', 'btc', 'btcusd', 'btc-usd', '比特币', '大饼'],
+  },
+  {
+    symbol: 'ETH-USD',
+    shortname: 'Ethereum USD',
+    longname: 'Ethereum / US Dollar',
+    exchange: 'CRYPTO',
+    aliases: ['ethereum', 'eth', 'ethusd', 'eth-usd', '以太坊'],
+  },
+  {
+    symbol: 'TSLA',
+    shortname: 'Tesla, Inc.',
+    longname: 'Tesla, Inc.',
+    exchange: 'NASDAQ',
+    aliases: ['tesla', 'tsla', '特斯拉'],
+  },
+  {
+    symbol: 'AAPL',
+    shortname: 'Apple Inc.',
+    longname: 'Apple Inc.',
+    exchange: 'NASDAQ',
+    aliases: ['apple', 'aapl', '苹果', '苹果公司'],
+  },
+  {
+    symbol: 'NVDA',
+    shortname: 'NVIDIA Corporation',
+    longname: 'NVIDIA Corporation',
+    exchange: 'NASDAQ',
+    aliases: ['nvidia', 'nvda', '英伟达', '辉达'],
+  },
+  {
+    symbol: '0700.HK',
+    shortname: 'Tencent Holdings Limited',
+    longname: 'Tencent Holdings Limited',
+    exchange: 'HKEX',
+    aliases: ['tencent', '0700.hk', '700.hk', '腾讯', '腾讯控股'],
+  },
+  {
+    symbol: '600519.SS',
+    shortname: 'Kweichow Moutai Co., Ltd.',
+    longname: 'Kweichow Moutai Co., Ltd.',
+    exchange: 'SSE',
+    aliases: ['600519.ss', '600519', '贵州茅台', '茅台'],
+  },
+  {
+    symbol: '000420.SZ',
+    shortname: 'Jilin Chemical Fibre Co., Ltd.',
+    longname: 'Jilin Chemical Fibre Co., Ltd.',
+    exchange: 'SZSE',
+    aliases: ['000420.sz', '000420', '吉林化纤'],
+  },
+];
+
+const normalizeAssetQuery = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[（）()]/g, '')
+    .replace(/_/g, '-');
+
+const findCuratedMatches = (query: string) => {
+  const normalized = normalizeAssetQuery(query);
+  if (!normalized) return [];
+
+  const exact = curatedAssets.filter((asset) =>
+    [asset.symbol, asset.shortname, asset.longname, ...asset.aliases]
+      .map(normalizeAssetQuery)
+      .includes(normalized),
+  );
+  if (exact.length > 0) return exact;
+
+  return curatedAssets.filter((asset) =>
+    [asset.symbol, asset.shortname, asset.longname, ...asset.aliases]
+      .map(normalizeAssetQuery)
+      .some((alias) => alias.includes(normalized) || normalized.includes(alias)),
+  );
+};
+
+const mapQuoteToSearchResult = (quote: any) => ({
+  symbol: quote.symbol,
+  shortname: quote.shortName,
+  longname: quote.longName,
+  exchange: quote.fullExchangeName || quote.exchange,
+});
+
 const normalizeChatCompletionsUrl = (baseUrl: string) => {
   const sanitized = baseUrl.trim().replace(/\/+$/, '');
   if (sanitized.endsWith('/chat/completions')) return sanitized;
@@ -391,6 +491,11 @@ export function createApp() {
       if (!query || query.trim() === '') {
         return res.json([]);
       }
+      const curatedMatches = findCuratedMatches(query);
+      if (/[\u4e00-\u9fa5]/.test(query) && curatedMatches.length > 0) {
+        return res.json(curatedMatches);
+      }
+
       const results = await yahooFinance.search(query);
       const quotes = results.quotes || [];
       const thirdPartyConfig = extractThirdPartyConfig(req);
@@ -405,12 +510,7 @@ export function createApp() {
           try {
             const fallbackQuote = await yahooFinance.quote(maybeTicker);
             if (fallbackQuote?.symbol) {
-              return res.json([{
-                symbol: fallbackQuote.symbol,
-                shortname: fallbackQuote.shortName,
-                longname: fallbackQuote.longName,
-                exchange: fallbackQuote.fullExchangeName || fallbackQuote.exchange,
-              }]);
+              return res.json([mapQuoteToSearchResult(fallbackQuote)]);
             }
           } catch (fallbackError) {
             console.error("AI resolve quote failed:", fallbackError);
@@ -418,11 +518,21 @@ export function createApp() {
         }
       }
 
-      res.json(quotes);
+      const merged = [
+        ...curatedMatches,
+        ...quotes.map((quote: any) => ({
+          symbol: quote.symbol,
+          shortname: quote.shortname || quote.shortName,
+          longname: quote.longname || quote.longName,
+          exchange: quote.exchange || quote.exchDisp || quote.fullExchangeName,
+        })),
+      ].filter((item, index, array) => item?.symbol && array.findIndex((candidate) => candidate.symbol === item.symbol) === index);
+
+      res.json(merged);
     } catch (error: any) {
       console.error("Error searching:", error);
       if (error.name === 'BadRequestError' || error.message?.includes('Invalid Search Query')) {
-        return res.json([]);
+        return res.json(findCuratedMatches(req.params.query));
       }
       res.status(500).json({ error: error.message || "Failed to search" });
     }
