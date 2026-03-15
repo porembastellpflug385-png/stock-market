@@ -511,6 +511,23 @@ const persistScannerSnapshots = (snapshots: ScannerSnapshot[]) => {
   window.localStorage.setItem(scannerSnapshotsStorageKey, JSON.stringify(snapshots.slice(0, 20)));
 };
 
+const compactScannerSnapshotsForValidation = (snapshots: ScannerSnapshot[]) =>
+  snapshots.slice(0, 10).map((snapshot) => ({
+    scannedAt: snapshot.scannedAt,
+    templateId: snapshot.templateId,
+    templateName: snapshot.templateName,
+    candidates: (snapshot.candidates || []).slice(0, 20).map((candidate) => ({
+      symbol: candidate.symbol,
+      metrics: {
+        price: candidate.metrics?.price ?? 0,
+      },
+    })),
+    refinements: (snapshot.refinements || []).slice(0, 20).map((item) => ({
+      symbol: item.symbol,
+      shouldPromote: Boolean(item.shouldPromote),
+    })),
+  }));
+
 const readStoredCandidatePool = (): CandidatePoolItem[] => {
   try {
     const raw = window.localStorage.getItem(candidatePoolStorageKey);
@@ -1060,10 +1077,11 @@ function App() {
     const runValidation = async () => {
       setScannerValidationLoading(true);
       try {
+        const snapshots = compactScannerSnapshotsForValidation(scannerSnapshots);
         const res = await fetch('/api/scanner/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ snapshots: scannerSnapshots }),
+          body: JSON.stringify({ snapshots }),
         });
         const payload = await readApiPayload(res);
         if (!res.ok) {
