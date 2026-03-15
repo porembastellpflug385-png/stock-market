@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import {
   Activity,
@@ -357,7 +358,7 @@ const createReportHtml = ({
   `;
 };
 
-const createPdfReport = ({
+const createPdfReport = async ({
   ticker,
   quote,
   indicators,
@@ -370,123 +371,52 @@ const createPdfReport = ({
   preferences: AnalysisPreferences;
   analysis: string;
 }) => {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const pageWidth = doc.internal.pageSize.getWidth();
-  const pageHeight = doc.internal.pageSize.getHeight();
-  const margin = 42;
-  const contentWidth = pageWidth - margin * 2;
-  let y = margin;
+  const reportRoot = document.createElement('div');
+  reportRoot.style.position = 'fixed';
+  reportRoot.style.left = '-99999px';
+  reportRoot.style.top = '0';
+  reportRoot.style.width = '980px';
+  reportRoot.style.background = '#eef4f9';
+  reportRoot.style.zIndex = '-1';
+  reportRoot.innerHTML = createReportHtml({ ticker, quote, indicators, preferences, analysis });
+  document.body.appendChild(reportRoot);
 
-  const ensureSpace = (height: number) => {
-    if (y + height <= pageHeight - margin) return;
-    doc.addPage();
-    y = margin;
-  };
-
-  const addWrapped = (text: string, fontSize = 11, color: [number, number, number] = [51, 65, 85], lineHeight = 18) => {
-    doc.setFontSize(fontSize);
-    doc.setTextColor(...color);
-    const lines = doc.splitTextToSize(text, contentWidth);
-    ensureSpace(lines.length * lineHeight + 8);
-    doc.text(lines, margin, y);
-    y += lines.length * lineHeight;
-  };
-
-  doc.setFillColor(245, 249, 255);
-  doc.rect(0, 0, pageWidth, pageHeight, 'F');
-  doc.setFillColor(255, 255, 255);
-  doc.roundedRect(margin, y, contentWidth, 160, 22, 22, 'F');
-  doc.setDrawColor(225, 232, 240);
-  doc.roundedRect(margin, y, contentWidth, 160, 22, 22, 'S');
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(100, 116, 139);
-  doc.text('INSTITUTIONAL MARKET REPORT', margin + 22, y + 26);
-  doc.setFontSize(24);
-  doc.setTextColor(15, 23, 42);
-  doc.text(String(quote.shortName || quote.longName || ticker), margin + 22, y + 56);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(11);
-  doc.setTextColor(82, 97, 121);
-  doc.text(
-    `代码 ${ticker}  ·  时间 ${new Date().toLocaleString('zh-CN')}  ·  周期 ${timeframeOptions.find((item) => item.value === preferences.timeframe)?.label || preferences.timeframe}`,
-    margin + 22,
-    y + 78,
-  );
-  doc.setFillColor(240, 253, 250);
-  doc.roundedRect(margin + 22, y + 96, 170, 28, 14, 14, 'F');
-  doc.setTextColor(15, 118, 110);
-  doc.setFont('helvetica', 'bold');
-  doc.text(`信号评分 ${indicators.signalScore}/100 · ${indicators.signalLabel}`, margin + 34, y + 115);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(51, 65, 85);
-  doc.text(`最新价 ${formatNumber(quote.regularMarketPrice)} ${quote.currency || ''}`, margin + 22, y + 142);
-  doc.text(`风险偏好 ${riskOptions.find((item) => item.value === preferences.riskProfile)?.label || preferences.riskProfile}`, margin + 240, y + 142);
-  y += 188;
-
-  const metricLines = [
-    `趋势：${indicators.trend.regime}`,
-    `RSI14：${formatNumber(indicators.momentum.rsi14)}`,
-    `MACD：${formatNumber(indicators.momentum.macd)} / ${formatNumber(indicators.momentum.signal)}`,
-    `ATR14：${formatNumber(indicators.volatility.atr14)}`,
-    `支撑 / 阻力：${formatNumber(indicators.supportResistance.support)} / ${formatNumber(indicators.supportResistance.resistance)}`,
-    `量能：${formatNumber(indicators.volume.relativeVolume)}x`,
-    `自定义关注：${preferences.customFocus || '无'}`,
-  ];
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
-  doc.setTextColor(15, 23, 42);
-  doc.text('核心指标摘要', margin, y);
-  y += 18;
-  doc.setFont('helvetica', 'normal');
-  metricLines.forEach((line) => {
-    addWrapped(`• ${line}`, 11, [51, 65, 85], 18);
-  });
-  y += 10;
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(15);
-  doc.setTextColor(15, 23, 42);
-  ensureSpace(24);
-  doc.text('详细分析报告', margin, y);
-  y += 22;
-  doc.setFont('helvetica', 'normal');
-
-  analysis.split('\n').forEach((rawLine) => {
-    const line = rawLine.trim();
-    if (!line) {
-      y += 8;
-      return;
+  try {
+    const page = reportRoot.querySelector('.page') as HTMLElement | null;
+    if (!page) {
+      throw new Error('报告内容渲染失败');
     }
-    if (line.startsWith('## ')) {
-      ensureSpace(28);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(14);
-      doc.setTextColor(15, 23, 42);
-      doc.text(line.slice(3), margin, y);
-      doc.setFont('helvetica', 'normal');
-      y += 20;
-      return;
-    }
-    if (line.startsWith('### ')) {
-      ensureSpace(24);
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(12);
-      doc.setTextColor(30, 41, 59);
-      doc.text(line.slice(4), margin, y);
-      doc.setFont('helvetica', 'normal');
-      y += 18;
-      return;
-    }
-    if (line.startsWith('- ')) {
-      addWrapped(`• ${line.slice(2)}`, 11, [51, 65, 85], 18);
-      return;
-    }
-    addWrapped(line, 11, [51, 65, 85], 18);
-  });
 
-  doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
+    const canvas = await html2canvas(page, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: '#eef4f9',
+      logging: false,
+    });
+
+    const imgData = canvas.toDataURL('image/png');
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const imgWidth = pageWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    let heightLeft = imgHeight;
+    let position = 0;
+
+    doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+    heightLeft -= pageHeight;
+
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight;
+      doc.addPage();
+      doc.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight, undefined, 'FAST');
+      heightLeft -= pageHeight;
+    }
+
+    doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
+  } finally {
+    document.body.removeChild(reportRoot);
+  }
 };
 
 const openPrintableReport = ({
@@ -864,9 +794,9 @@ function App() {
     openPrintableReport({ ticker, quote, indicators, preferences, analysis });
   };
 
-  const downloadPdfReport = () => {
+  const downloadPdfReport = async () => {
     if (!quote || !indicators || !analysis || !ticker) return;
-    createPdfReport({ ticker, quote, indicators, preferences, analysis });
+    await createPdfReport({ ticker, quote, indicators, preferences, analysis });
   };
 
   const toggleDimension = (dimension: AnalysisDimension) => {

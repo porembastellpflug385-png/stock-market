@@ -53,3 +53,10 @@ npm run dev
 - 引入“综合信号评分 + 关键价位 + 风险提示”分析框架
 - 新增前端配置面板，支持自定义分析维度和关注点
 - 提供自动刷新，适合盯盘场景
+- 支持专业分析报告导出：`PDF`、`Markdown`、`HTML`
+
+## 规划文档
+
+- 产品方案：[docs/tracking-system-prd.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-prd.md)
+- 数据结构：[docs/tracking-system-data-model.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-data-model.md)
+- 页面与排期：[docs/tracking-system-ia-and-roadmap.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-ia-and-roadmap.md)
