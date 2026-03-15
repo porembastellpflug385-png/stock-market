@@ -358,7 +358,7 @@ const trackingStrategies = [
     id: 'etf-rotation',
     name: 'ETF 轮动风格',
     description: '面向 ETF 和指数代理资产的轮动策略。',
-    objective: '在相对强势资产和低波动资产间做周期轮换。',
+    objective: '在相对强势资产和低波动资产间做出周期轮换。',
   },
 ] as const;
 const trackingAiMaxAssets = 6;
