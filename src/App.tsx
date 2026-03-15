@@ -2388,6 +2388,8 @@ function App() {
         </div>
       )}
 
+      {false && (
+        <>
       {scannerError && (
         <div className="mt-6 rounded-[28px] border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
           {scannerError}
@@ -2708,6 +2710,8 @@ function App() {
           })}
         </div>
       </section>
+        </>
+      )}
 
       <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">

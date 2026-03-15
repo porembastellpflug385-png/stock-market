@@ -264,6 +264,33 @@ const summarizeValidationGroup = (items: Array<{ returnPct: number; drawdownPct:
   };
 };
 
+const isTransientLlmError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /LLM request failed/i.test(message) && /( 429 )|upstream_error|负载已饱和|model_not_found/i.test(message);
+};
+
+const buildRuleBasedRefinements = (candidates: any[]) =>
+  candidates
+    .map((item) => {
+      const opportunityScore = Math.max(0, Math.min(100, Number(item.opportunityScore || 0)));
+      const riskScore = Math.max(0, Math.min(100, Number(item.riskScore || 0)));
+      const aiScore = Math.max(0, Math.min(100, Math.round(opportunityScore * 0.78 + (100 - riskScore) * 0.22)));
+      return {
+        symbol: String(item.symbol || '').toUpperCase(),
+        aiScore,
+        conviction: aiScore >= 82 ? 'high' : aiScore >= 66 ? 'medium' : 'low',
+        recommendation: aiScore >= 80 ? 'focus' : aiScore >= 62 ? 'watch' : 'skip',
+        shouldPromote: aiScore >= 78,
+        summary: `规则降级评估：机会分 ${opportunityScore}，风险分 ${riskScore}，建议${aiScore >= 80 ? '优先关注' : aiScore >= 62 ? '继续观察' : '暂缓处理'}。`,
+        risks: [
+          '本次为规则降级结果，未经过大模型复核。',
+          riskScore >= 65 ? '波动和回撤风险偏高。' : '需等待更多量价确认。',
+        ].slice(0, riskScore >= 65 ? 2 : 1),
+      };
+    })
+    .filter((item) => item.symbol)
+    .sort((left, right) => right.aiScore - left.aiScore);
+
 const generateWithThirdParty = async ({
   messages,
   config,
@@ -539,12 +566,20 @@ const generateInstitutionalAnalysis = async (
   preferences: AnalysisPreferences,
 ) => {
   const prompt = buildPrompt(ticker, bundle, preferences);
-  const result = await generateWithThirdParty({
-    messages: [{ role: 'user', content: prompt }],
-    config: defaultServerProvider,
-    customConfig: { temperature: 0.3 },
-  });
-  return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
+  try {
+    const result = await generateWithThirdParty({
+      messages: [{ role: 'user', content: prompt }],
+      config: defaultServerProvider,
+      customConfig: { temperature: 0.3 },
+    });
+    return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
+  } catch (error) {
+    if (isTransientLlmError(error)) {
+      console.warn(`LLM temporarily unavailable for ${ticker}, falling back to rules analysis.`);
+      return buildFallbackAnalysis(ticker, bundle, preferences);
+    }
+    throw error;
+  }
 };
 
 const runTrackingWorkflow = async (
@@ -736,16 +771,27 @@ export function createApp() {
       const bundle = await fetchMarketBundle(ticker, preferences.timeframe);
       const thirdPartyConfig = extractThirdPartyConfig(req);
       const prompt = buildPrompt(ticker, bundle, preferences);
-      const result = await generateWithThirdParty({
-        messages: [{ role: 'user', content: prompt }],
-        config: thirdPartyConfig || defaultServerProvider,
-        customConfig: { temperature: 0.3 },
-      });
+      try {
+        const result = await generateWithThirdParty({
+          messages: [{ role: 'user', content: prompt }],
+          config: thirdPartyConfig || defaultServerProvider,
+          customConfig: { temperature: 0.3 },
+        });
 
-      res.json({
-        analysis: result.text || buildFallbackAnalysis(ticker, bundle, preferences),
-        source: thirdPartyConfig ? 'third-party' : 'openai',
-      });
+        res.json({
+          analysis: result.text || buildFallbackAnalysis(ticker, bundle, preferences),
+          source: thirdPartyConfig ? 'third-party' : 'openai',
+        });
+      } catch (error) {
+        if (isTransientLlmError(error)) {
+          return res.json({
+            analysis: buildFallbackAnalysis(ticker, bundle, preferences),
+            source: 'rules',
+            degraded: true,
+          });
+        }
+        throw error;
+      }
     } catch (error: any) {
       console.error("Error generating analysis:", error);
       res.status(500).json({ error: error.message || "Failed to generate analysis" });
@@ -846,37 +892,49 @@ export function createApp() {
         JSON.stringify(candidates, null, 2),
       ].join('\n');
 
-      const result = await generateWithThirdParty({
-        messages: [{ role: 'user', content: prompt }],
-        config: defaultServerProvider,
-        customConfig: { temperature: 0.2 },
-      });
+      try {
+        const result = await generateWithThirdParty({
+          messages: [{ role: 'user', content: prompt }],
+          config: defaultServerProvider,
+          customConfig: { temperature: 0.2 },
+        });
 
-      const parsed = tryParseJsonFragment(result.text);
-      if (!Array.isArray(parsed)) {
-        throw new Error('Model did not return an array');
+        const parsed = tryParseJsonFragment(result.text);
+        if (!Array.isArray(parsed)) {
+          throw new Error('Model did not return an array');
+        }
+
+        const refined = parsed
+          .filter((item) => item && typeof item.symbol === 'string')
+          .map((item) => ({
+            symbol: String(item.symbol).toUpperCase(),
+            aiScore: Math.max(0, Math.min(100, Number(item.aiScore || 0))),
+            conviction:
+              item.conviction === 'high' || item.conviction === 'low' ? item.conviction : 'medium',
+            recommendation:
+              item.recommendation === 'focus' || item.recommendation === 'skip' ? item.recommendation : 'watch',
+            shouldPromote: Boolean(item.shouldPromote),
+            summary: String(item.summary || ''),
+            risks: Array.isArray(item.risks) ? item.risks.slice(0, 3).map((risk) => String(risk)) : [],
+          }))
+          .sort((left, right) => right.aiScore - left.aiScore);
+
+        return res.json({
+          refined,
+          topN,
+          model: defaultServerProvider.model,
+        });
+      } catch (error) {
+        if (isTransientLlmError(error)) {
+          return res.json({
+            refined: buildRuleBasedRefinements(candidates),
+            topN,
+            model: 'rules-fallback',
+            degraded: true,
+          });
+        }
+        throw error;
       }
-
-      const refined = parsed
-        .filter((item) => item && typeof item.symbol === 'string')
-        .map((item) => ({
-          symbol: String(item.symbol).toUpperCase(),
-          aiScore: Math.max(0, Math.min(100, Number(item.aiScore || 0))),
-          conviction:
-            item.conviction === 'high' || item.conviction === 'low' ? item.conviction : 'medium',
-          recommendation:
-            item.recommendation === 'focus' || item.recommendation === 'skip' ? item.recommendation : 'watch',
-          shouldPromote: Boolean(item.shouldPromote),
-          summary: String(item.summary || ''),
-          risks: Array.isArray(item.risks) ? item.risks.slice(0, 3).map((risk) => String(risk)) : [],
-        }))
-        .sort((left, right) => right.aiScore - left.aiScore);
-
-      res.json({
-        refined,
-        topN,
-        model: defaultServerProvider.model,
-      });
     } catch (error: any) {
       console.error("Error refining scanner candidates:", error);
       res.status(500).json({ error: error.message || "Failed to refine scanner candidates" });
