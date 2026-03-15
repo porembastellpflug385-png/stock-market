@@ -60,3 +60,20 @@ npm run dev
 - 产品方案：[docs/tracking-system-prd.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-prd.md)
 - 数据结构：[docs/tracking-system-data-model.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-data-model.md)
 - 页面与排期：[docs/tracking-system-ia-and-roadmap.md](/Users/kevin/Documents/code/market-analyzer-upgrade/docs/tracking-system-ia-and-roadmap.md)
+
+## 跟踪系统自动运行
+
+项目已经内置跟踪系统定时入口：
+
+- `GET /api/tracking/cron/daily`
+- `GET /api/tracking/cron/weekly`
+- `GET /api/tracking/cron/monthly`
+
+在 Vercel 部署时建议设置：
+
+```bash
+CRON_SECRET=your_secure_secret
+```
+
+这样定时任务会通过 `Authorization: Bearer <CRON_SECRET>` 进行保护。
+当前 `vercel.json` 已配置工作日日报、周报、月报自动运行计划。

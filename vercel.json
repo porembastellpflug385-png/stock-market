@@ -25,5 +25,19 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/tracking/cron/daily",
+      "schedule": "0 12 * * 1-5"
+    },
+    {
+      "path": "/api/tracking/cron/weekly",
+      "schedule": "30 12 * * 5"
+    },
+    {
+      "path": "/api/tracking/cron/monthly",
+      "schedule": "0 13 1 * *"
+    }
   ]
 }

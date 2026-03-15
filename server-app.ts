@@ -2,6 +2,15 @@ import 'dotenv/config';
 import express from "express";
 import YahooFinance from "yahoo-finance2";
 import {
+  addWatchlistAsset,
+  listTrackingOverview,
+  removeWatchlistAsset,
+  runTrackingCycle,
+  setWatchlistPriority,
+  toggleWatchlistTag,
+  type ReportScope,
+} from "./tracking-system.js";
+import {
   createAnalysisPacket,
   defaultPreferences,
   timeframeMonths,
@@ -481,6 +490,70 @@ ${recentSeries.map((item) => `${item.date} | ${item.close} | ${item.rsi14 ?? 'N/
 `.trim();
 };
 
+const generateInstitutionalAnalysis = async (
+  ticker: string,
+  bundle: Awaited<ReturnType<typeof fetchMarketBundle>>,
+  preferences: AnalysisPreferences,
+) => {
+  const prompt = buildPrompt(ticker, bundle, preferences);
+  const result = await generateWithThirdParty({
+    messages: [{ role: 'user', content: prompt }],
+    config: defaultServerProvider,
+    customConfig: { temperature: 0.3 },
+  });
+  return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
+};
+
+const runTrackingWorkflow = async (scope: ReportScope, trigger: 'manual' | 'cron' = 'manual') => {
+  const preferences: AnalysisPreferences = {
+    ...defaultPreferences,
+    timeframe: '6mo',
+  };
+  const overview = listTrackingOverview();
+  const maxAiAssets = Number(process.env.TRACKING_AI_MAX_ASSETS || 6);
+  const prioritizedSymbols = overview.watchlist
+    .filter((item) => item.priority > 0 || item.tags.includes('重点'))
+    .sort((left, right) => right.priority - left.priority || left.addedAt.localeCompare(right.addedAt))
+    .slice(0, maxAiAssets)
+    .map((item) => item.symbol);
+  const prioritizedSet = new Set(prioritizedSymbols);
+
+  return runTrackingCycle({
+    scope,
+    trigger,
+    fetchAsset: async (symbol) => {
+      const bundle = await fetchMarketBundle(symbol, preferences.timeframe);
+      return {
+        quote: {
+          symbol: bundle.quote.symbol,
+          shortName: bundle.quote.shortName,
+          longName: bundle.quote.longName,
+          currency: bundle.quote.currency,
+          regularMarketPrice: bundle.quote.regularMarketPrice,
+          regularMarketChangePercent: bundle.quote.regularMarketChangePercent,
+          trailingPE: bundle.quote.trailingPE,
+          exchange: bundle.quote.exchange || (bundle.quote as any).fullExchangeName,
+        },
+        packet: bundle.packet,
+      };
+    },
+    generateAnalysis: async (symbol) => {
+      const fullBundle = await fetchMarketBundle(symbol, preferences.timeframe);
+      if (!prioritizedSet.has(symbol)) {
+        return buildFallbackAnalysis(symbol, fullBundle, preferences);
+      }
+      return generateInstitutionalAnalysis(symbol, fullBundle, preferences);
+    },
+  });
+};
+
+const isCronAuthorized = (req: express.Request) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) return true;
+  const authHeader = req.header('authorization') || '';
+  return authHeader === `Bearer ${cronSecret}`;
+};
+
 export function createApp() {
   const app = express();
   app.use(express.json());
@@ -631,6 +704,134 @@ export function createApp() {
     } catch (error: any) {
       console.error("Error testing provider:", error);
       res.status(500).json({ error: error.message || "Provider test failed", debug: error.debug });
+    }
+  });
+
+  app.get("/api/tracking/overview", (_req, res) => {
+    try {
+      res.json(listTrackingOverview());
+    } catch (error: any) {
+      console.error("Error loading tracking overview:", error);
+      res.status(500).json({ error: error.message || "Failed to load tracking overview" });
+    }
+  });
+
+  app.get("/api/tracking/strategies", (_req, res) => {
+    try {
+      res.json(listTrackingOverview().strategies);
+    } catch (error: any) {
+      console.error("Error loading strategies:", error);
+      res.status(500).json({ error: error.message || "Failed to load strategies" });
+    }
+  });
+
+  app.post("/api/tracking/watchlist", async (req, res) => {
+    try {
+      const query = String(req.body?.query || req.body?.symbol || '').trim();
+      if (!query) {
+        return res.status(400).json({ error: "Query or symbol is required" });
+      }
+
+      let symbol = query.toUpperCase();
+      let name = query;
+      const curated = findCuratedMatches(query)[0];
+      if (curated) {
+        symbol = curated.symbol;
+        name = curated.shortname || curated.longname || curated.symbol;
+      } else {
+        try {
+          const results = await yahooFinance.search(query);
+          const matched = results.quotes?.[0] as
+            | { symbol?: string; shortname?: string; longname?: string }
+            | undefined;
+          if (matched?.symbol) {
+            symbol = matched.symbol;
+            name = matched.shortname || matched.longname || matched.symbol;
+          }
+        } catch (searchError) {
+          console.warn(`Search fallback failed for ${query}:`, searchError);
+        }
+      }
+
+      const state = addWatchlistAsset({
+        symbol,
+        name,
+        tags: Array.isArray(req.body?.tags) ? req.body.tags : [],
+        notes: String(req.body?.notes || ''),
+      });
+      res.json(state);
+    } catch (error: any) {
+      console.error("Error adding watchlist asset:", error);
+      res.status(500).json({ error: error.message || "Failed to add asset to watchlist" });
+    }
+  });
+
+  app.delete("/api/tracking/watchlist/:symbol", (req, res) => {
+    try {
+      res.json(removeWatchlistAsset(req.params.symbol));
+    } catch (error: any) {
+      console.error("Error removing watchlist asset:", error);
+      res.status(500).json({ error: error.message || "Failed to remove asset from watchlist" });
+    }
+  });
+
+  app.patch("/api/tracking/watchlist/:symbol/tags", (req, res) => {
+    try {
+      const tag = String(req.body?.tag || '').trim();
+      if (!tag) {
+        return res.status(400).json({ error: "Tag is required" });
+      }
+      res.json(toggleWatchlistTag(req.params.symbol, tag));
+    } catch (error: any) {
+      console.error("Error toggling watchlist tag:", error);
+      res.status(500).json({ error: error.message || "Failed to update watchlist tag" });
+    }
+  });
+
+  app.patch("/api/tracking/watchlist/:symbol/priority", (req, res) => {
+    try {
+      const priority = Number(req.body?.priority);
+      if (!Number.isFinite(priority)) {
+        return res.status(400).json({ error: "Priority must be a number" });
+      }
+      res.json(setWatchlistPriority(req.params.symbol, priority));
+    } catch (error: any) {
+      console.error("Error setting watchlist priority:", error);
+      res.status(500).json({ error: error.message || "Failed to update watchlist priority" });
+    }
+  });
+
+  app.post("/api/tracking/run", async (req, res) => {
+    try {
+      const scope = (String(req.body?.scope || 'daily') as ReportScope);
+      const state = await runTrackingWorkflow(scope, 'manual');
+      res.json(state);
+    } catch (error: any) {
+      console.error("Error running tracking cycle:", error);
+      res.status(500).json({ error: error.message || "Failed to run tracking cycle" });
+    }
+  });
+
+  app.get("/api/tracking/cron/:scope", async (req, res) => {
+    try {
+      if (!isCronAuthorized(req)) {
+        return res.status(401).json({ error: "Unauthorized cron request" });
+      }
+
+      const rawScope = String(req.params.scope || 'daily');
+      const scope: ReportScope =
+        rawScope === 'weekly' || rawScope === 'monthly' ? rawScope : 'daily';
+
+      const state = await runTrackingWorkflow(scope, 'cron');
+      res.json({
+        ok: true,
+        scope,
+        generatedAt: new Date().toISOString(),
+        reports: state.generatedReports.slice(0, 3),
+      });
+    } catch (error: any) {
+      console.error("Error running scheduled tracking cycle:", error);
+      res.status(500).json({ error: error.message || "Failed to run scheduled tracking cycle" });
     }
   });
 

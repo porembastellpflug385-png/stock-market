@@ -1,0 +1,603 @@
+import fs from 'fs';
+import path from 'path';
+import type { AnalysisPacket, IndicatorSnapshot } from './src/lib/market-analysis.js';
+
+export type StrategyId =
+  | 'global-value'
+  | 'global-growth'
+  | 'macro-hedge'
+  | 'highflyer-quant'
+  | 'etf-rotation';
+
+export type ReportScope = 'daily' | 'weekly' | 'monthly';
+
+export type TrackingAsset = {
+  symbol: string;
+  name: string;
+  market: string;
+  assetClass: 'equity' | 'etf' | 'crypto' | 'other';
+  tags: string[];
+  priority: number;
+  notes: string;
+  addedAt: string;
+};
+
+export type StrategyProfile = {
+  id: StrategyId;
+  name: string;
+  description: string;
+  objective: string;
+};
+
+export type StrategyPosition = {
+  symbol: string;
+  name: string;
+  quantity: number;
+  avgCost: number;
+  marketPrice: number;
+  marketValue: number;
+  weight: number;
+  unrealizedPnl: number;
+};
+
+export type StrategyTrade = {
+  id: string;
+  executedAt: string;
+  symbol: string;
+  side: 'buy' | 'sell';
+  quantity: number;
+  price: number;
+  amount: number;
+  reason: string;
+};
+
+export type PortfolioSnapshot = {
+  date: string;
+  equity: number;
+  cash: number;
+};
+
+export type StrategyPortfolio = {
+  strategyId: StrategyId;
+  strategyName: string;
+  initialCash: number;
+  cash: number;
+  positions: StrategyPosition[];
+  trades: StrategyTrade[];
+  history: PortfolioSnapshot[];
+  lastRebalancedAt: string | null;
+};
+
+export type StructuredView = {
+  direction: 'bullish' | 'neutral' | 'bearish';
+  confidence: number;
+  action: 'buy' | 'hold' | 'reduce' | 'avoid';
+  horizon: 'short' | 'swing' | 'mid';
+  support: number | null;
+  resistance: number | null;
+  targetPrice: number | null;
+  stopLoss: number | null;
+  summary: string;
+};
+
+export type TrackingReportRecord = {
+  symbol: string;
+  reportDate: string;
+  quote: {
+    symbol: string;
+    shortName?: string;
+    longName?: string;
+    currency?: string;
+    regularMarketPrice?: number;
+    regularMarketChangePercent?: number;
+    trailingPE?: number;
+    exchange?: string;
+  };
+  indicators: IndicatorSnapshot;
+  analysis: string;
+  structured: StructuredView;
+};
+
+export type ValidationRecord = {
+  symbol: string;
+  reportDate: string;
+  validatedAt: string;
+  actualReturnPct: number;
+  directionCorrect: boolean;
+  recommendationEffective: boolean;
+  strategyAlignmentScore: number;
+  notes: string;
+};
+
+export type GeneratedReport = {
+  id: string;
+  scope: ReportScope;
+  generatedAt: string;
+  title: string;
+  markdown: string;
+  trigger?: 'manual' | 'cron';
+};
+
+export type TrackingOverview = {
+  watchlist: TrackingAsset[];
+  strategies: StrategyProfile[];
+  portfolios: StrategyPortfolio[];
+  latestReports: TrackingReportRecord[];
+  validations: ValidationRecord[];
+  generatedReports: GeneratedReport[];
+};
+
+type TrackingState = TrackingOverview;
+
+type RunTrackingCycleOptions = {
+  scope: ReportScope;
+  trigger?: 'manual' | 'cron';
+  fetchAsset: (symbol: string) => Promise<{
+    quote: TrackingReportRecord['quote'];
+    packet: AnalysisPacket;
+  }>;
+  generateAnalysis: (symbol: string, bundle: { quote: TrackingReportRecord['quote']; packet: AnalysisPacket }) => Promise<string>;
+};
+
+const dataDir = path.join(process.cwd(), 'data');
+const dataFile = path.join(dataDir, 'tracking-system.json');
+
+const strategyProfiles: StrategyProfile[] = [
+  {
+    id: 'global-value',
+    name: '全球价值基金风格',
+    description: '偏低估、低换手、重估值安全边际。',
+    objective: '优先寻找估值合理、技术结构未破坏的资产。',
+  },
+  {
+    id: 'global-growth',
+    name: '全球成长基金风格',
+    description: '偏趋势成长、强者恒强、景气驱动。',
+    objective: '优先配置趋势强、量价健康的高质量成长资产。',
+  },
+  {
+    id: 'macro-hedge',
+    name: '宏观对冲风格',
+    description: '重视风险预算、波动控制与现金管理。',
+    objective: '在不确定环境中以防守和选择性进攻并重。',
+  },
+  {
+    id: 'highflyer-quant',
+    name: '幻方量化风格',
+    description: '多因子、规则驱动、强调统计优势。',
+    objective: '根据信号评分、动量与波动因子进行系统性配置。',
+  },
+  {
+    id: 'etf-rotation',
+    name: 'ETF 轮动风格',
+    description: '面向 ETF 和指数代理资产的轮动策略。',
+    objective: '在相对强势资产和低波动资产间做周期轮换。',
+  },
+];
+
+const round = (value: number, digits = 4) => Number(value.toFixed(digits));
+
+const ensureStore = () => {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+  if (!fs.existsSync(dataFile)) {
+    const initial: TrackingState = {
+      watchlist: [],
+      strategies: strategyProfiles,
+      portfolios: strategyProfiles.map((strategy) => ({
+        strategyId: strategy.id,
+        strategyName: strategy.name,
+        initialCash: 1_000_000,
+        cash: 1_000_000,
+        positions: [],
+        trades: [],
+        history: [],
+        lastRebalancedAt: null,
+      })),
+      latestReports: [],
+      validations: [],
+      generatedReports: [],
+    };
+    fs.writeFileSync(dataFile, JSON.stringify(initial, null, 2), 'utf8');
+  }
+};
+
+const readState = (): TrackingState => {
+  ensureStore();
+  const raw = fs.readFileSync(dataFile, 'utf8');
+  const parsed = JSON.parse(raw) as TrackingState;
+  return {
+    watchlist: (parsed.watchlist || []).map((item) => {
+      const priority = Math.max(0, Math.min(3, Number(item.priority || 0)));
+      const tags = Array.isArray(item.tags) ? [...item.tags] : [];
+      const normalizedTags =
+        priority > 0
+          ? Array.from(new Set([...tags, '重点']))
+          : tags.filter((tag) => tag !== '重点');
+
+      return {
+        ...item,
+        tags: normalizedTags,
+        priority,
+      };
+    }),
+    strategies: strategyProfiles,
+    portfolios: parsed.portfolios?.length ? parsed.portfolios : strategyProfiles.map((strategy) => ({
+      strategyId: strategy.id,
+      strategyName: strategy.name,
+      initialCash: 1_000_000,
+      cash: 1_000_000,
+      positions: [],
+      trades: [],
+      history: [],
+      lastRebalancedAt: null,
+    })),
+    latestReports: parsed.latestReports || [],
+    validations: parsed.validations || [],
+    generatedReports: parsed.generatedReports || [],
+  };
+};
+
+const writeState = (state: TrackingState) => {
+  ensureStore();
+  fs.writeFileSync(dataFile, JSON.stringify(state, null, 2), 'utf8');
+};
+
+const inferAssetClass = (symbol: string): TrackingAsset['assetClass'] => {
+  if (symbol.endsWith('-USD')) return 'crypto';
+  if (/ETF|SPY|QQQ|IWM|TLT|GLD|DIA/i.test(symbol)) return 'etf';
+  if (/\.HK|\.SS|\.SZ|^[A-Z]+$/.test(symbol)) return 'equity';
+  return 'other';
+};
+
+const inferMarket = (symbol: string) => {
+  if (symbol.endsWith('.SS')) return 'SSE';
+  if (symbol.endsWith('.SZ')) return 'SZSE';
+  if (symbol.endsWith('.HK')) return 'HKEX';
+  if (symbol.endsWith('-USD')) return 'CRYPTO';
+  return 'GLOBAL';
+};
+
+export const listTrackingOverview = () => readState();
+
+export const addWatchlistAsset = (input: {
+  symbol: string;
+  name?: string;
+  tags?: string[];
+  notes?: string;
+}) => {
+  const state = readState();
+  const symbol = input.symbol.trim().toUpperCase();
+  const existing = state.watchlist.find((item) => item.symbol === symbol);
+  if (existing) return state;
+
+  state.watchlist.unshift({
+    symbol,
+    name: input.name?.trim() || symbol,
+    market: inferMarket(symbol),
+    assetClass: inferAssetClass(symbol),
+    tags: input.tags || [],
+    priority: 0,
+    notes: input.notes || '',
+    addedAt: new Date().toISOString(),
+  });
+  writeState(state);
+  return state;
+};
+
+export const removeWatchlistAsset = (symbol: string) => {
+  const state = readState();
+  state.watchlist = state.watchlist.filter((item) => item.symbol !== symbol.toUpperCase());
+  writeState(state);
+  return state;
+};
+
+export const toggleWatchlistTag = (symbol: string, tag: string) => {
+  const state = readState();
+  const normalizedSymbol = symbol.toUpperCase();
+  state.watchlist = state.watchlist.map((item) => {
+    if (item.symbol !== normalizedSymbol) return item;
+    const exists = item.tags.includes(tag);
+    const nextTags = exists ? item.tags.filter((entry) => entry !== tag) : [...item.tags, tag];
+    return {
+      ...item,
+      tags: nextTags,
+      priority: tag === '重点' ? (exists ? 0 : Math.max(1, item.priority || 0)) : item.priority,
+    };
+  });
+  writeState(state);
+  return state;
+};
+
+export const setWatchlistPriority = (symbol: string, priority: number) => {
+  const state = readState();
+  const normalizedSymbol = symbol.toUpperCase();
+  const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
+
+  state.watchlist = state.watchlist.map((item) => {
+    if (item.symbol !== normalizedSymbol) return item;
+    const nextTags =
+      normalizedPriority > 0
+        ? Array.from(new Set([...item.tags, '重点']))
+        : item.tags.filter((tag) => tag !== '重点');
+
+    return {
+      ...item,
+      priority: normalizedPriority,
+      tags: nextTags,
+    };
+  });
+
+  writeState(state);
+  return state;
+};
+
+const deriveStructuredView = (
+  price: number,
+  snapshot: IndicatorSnapshot,
+): StructuredView => {
+  const confidence = Math.max(5, Math.min(95, Math.round(snapshot.signalScore)));
+  const direction =
+    snapshot.signalScore >= 65 ? 'bullish' :
+    snapshot.signalScore <= 40 ? 'bearish' :
+    'neutral';
+  const action =
+    direction === 'bullish' ? 'buy' :
+    direction === 'bearish' ? 'reduce' :
+    'hold';
+  const horizon =
+    Math.abs(snapshot.returns.month || 0) > 10 ? 'mid' :
+    Math.abs(snapshot.returns.week || 0) > 4 ? 'swing' :
+    'short';
+
+  return {
+    direction,
+    confidence,
+    action,
+    horizon,
+    support: snapshot.supportResistance.support,
+    resistance: snapshot.supportResistance.resistance,
+    targetPrice: snapshot.supportResistance.resistance,
+    stopLoss: snapshot.supportResistance.support,
+    summary: `${snapshot.signalLabel}，趋势 ${snapshot.trend.regime}，RSI ${snapshot.momentum.rsi14 ?? 'N/A'}`,
+  };
+};
+
+const buildRankScore = (
+  strategyId: StrategyId,
+  report: TrackingReportRecord,
+  asset: TrackingAsset,
+) => {
+  const snapshot = report.indicators;
+  const price = report.quote.regularMarketPrice || snapshot.price || 0;
+  const pe = report.quote.trailingPE ?? 0;
+
+  if (strategyId === 'global-value') {
+    return snapshot.signalScore + (pe > 0 && pe < 30 ? 12 : 0) + ((snapshot.momentum.rsi14 ?? 50) < 45 ? 8 : 0);
+  }
+  if (strategyId === 'global-growth') {
+    return snapshot.signalScore + (snapshot.returns.month ?? 0) + (snapshot.trend.regime.includes('多') ? 12 : 0);
+  }
+  if (strategyId === 'macro-hedge') {
+    return (100 - (snapshot.volatility.annualizedVolatility ?? 30)) + (snapshot.signalScore * 0.6);
+  }
+  if (strategyId === 'highflyer-quant') {
+    return snapshot.signalScore + ((snapshot.returns.week ?? 0) * 1.2) - ((snapshot.volatility.annualizedVolatility ?? 0) * 0.4);
+  }
+  if (strategyId === 'etf-rotation') {
+    return (asset.assetClass === 'etf' ? 20 : 0) + snapshot.signalScore + ((snapshot.returns.month ?? 0) * 0.8) - ((snapshot.volatility.annualizedVolatility ?? 0) * 0.25) + (price > (snapshot.trend.ema20 ?? price) ? 6 : 0);
+  }
+  return snapshot.signalScore;
+};
+
+const desiredWeightsForStrategy = (
+  strategyId: StrategyId,
+  reports: TrackingReportRecord[],
+  assets: TrackingAsset[],
+) => {
+  const ranked = reports
+    .map((report) => ({
+      report,
+      asset: assets.find((item) => item.symbol === report.symbol),
+    }))
+    .filter((item): item is { report: TrackingReportRecord; asset: TrackingAsset } => Boolean(item.asset))
+    .sort((left, right) => buildRankScore(strategyId, right.report, right.asset) - buildRankScore(strategyId, left.report, left.asset));
+
+  const top = strategyId === 'macro-hedge' ? ranked.slice(0, 2) : ranked.slice(0, 3);
+  const weights = new Map<string, number>();
+  const gross =
+    strategyId === 'macro-hedge' ? 0.45 :
+    strategyId === 'etf-rotation' ? 0.8 :
+    0.9;
+
+  if (top.length === 0) return weights;
+  const each = gross / top.length;
+  top.forEach((item) => weights.set(item.report.symbol, round(each)));
+  return weights;
+};
+
+const portfolioEquity = (portfolio: StrategyPortfolio) =>
+  portfolio.cash + portfolio.positions.reduce((sum, position) => sum + position.marketValue, 0);
+
+const rebalancePortfolio = (
+  portfolio: StrategyPortfolio,
+  weights: Map<string, number>,
+  reports: TrackingReportRecord[],
+) => {
+  const equity = portfolioEquity(portfolio);
+  const nextPositions: StrategyPosition[] = [];
+  const nextTrades = [...portfolio.trades];
+
+  reports.forEach((report) => {
+    const targetWeight = weights.get(report.symbol) || 0;
+    const price = report.quote.regularMarketPrice || report.indicators.price || 0;
+    if (!price) return;
+
+    const current = portfolio.positions.find((item) => item.symbol === report.symbol);
+    const targetValue = equity * targetWeight;
+    const targetQuantity = targetWeight > 0 ? targetValue / price : 0;
+    const currentQuantity = current?.quantity || 0;
+    const delta = targetQuantity - currentQuantity;
+
+    if (Math.abs(delta * price) > equity * 0.01) {
+      const side = delta > 0 ? 'buy' : 'sell';
+      const quantity = round(Math.abs(delta), 6);
+      const amount = round(quantity * price, 2);
+      nextTrades.unshift({
+        id: `${portfolio.strategyId}-${report.symbol}-${Date.now()}-${nextTrades.length}`,
+        executedAt: new Date().toISOString(),
+        symbol: report.symbol,
+        side,
+        quantity,
+        price: round(price, 4),
+        amount,
+        reason: report.structured.summary,
+      });
+      portfolio.cash += side === 'buy' ? -amount : amount;
+    }
+
+    if (targetWeight > 0) {
+      const marketValue = round(targetQuantity * price, 2);
+      nextPositions.push({
+        symbol: report.symbol,
+        name: report.quote.shortName || report.quote.longName || report.symbol,
+        quantity: round(targetQuantity, 6),
+        avgCost: round(price, 4),
+        marketPrice: round(price, 4),
+        marketValue,
+        weight: round(targetWeight * 100, 2),
+        unrealizedPnl: current ? round((price - current.avgCost) * targetQuantity, 2) : 0,
+      });
+    }
+  });
+
+  portfolio.positions = nextPositions;
+  portfolio.trades = nextTrades.slice(0, 120);
+  portfolio.lastRebalancedAt = new Date().toISOString();
+  portfolio.history.unshift({
+    date: new Date().toISOString(),
+    equity: round(portfolioEquity(portfolio), 2),
+    cash: round(portfolio.cash, 2),
+  });
+  portfolio.history = portfolio.history.slice(0, 90);
+};
+
+const createValidation = (
+  previous: TrackingReportRecord,
+  current: TrackingReportRecord,
+): ValidationRecord => {
+  const prevPrice = previous.quote.regularMarketPrice || previous.indicators.price || 0;
+  const currentPrice = current.quote.regularMarketPrice || current.indicators.price || 0;
+  const actualReturnPct = prevPrice ? round(((currentPrice - prevPrice) / prevPrice) * 100, 2) : 0;
+  const directionCorrect =
+    previous.structured.direction === 'bullish' ? actualReturnPct >= 0 :
+    previous.structured.direction === 'bearish' ? actualReturnPct <= 0 :
+    Math.abs(actualReturnPct) < 6;
+  const recommendationEffective =
+    previous.structured.action === 'buy' ? actualReturnPct > 0 :
+    previous.structured.action === 'reduce' ? actualReturnPct < 0 :
+    Math.abs(actualReturnPct) < 8;
+  const strategyAlignmentScore = Math.max(0, Math.min(100, 50 + (directionCorrect ? 30 : -20) + (recommendationEffective ? 20 : -10)));
+
+  return {
+    symbol: current.symbol,
+    reportDate: previous.reportDate,
+    validatedAt: current.reportDate,
+    actualReturnPct,
+    directionCorrect,
+    recommendationEffective,
+    strategyAlignmentScore,
+    notes: `${previous.structured.action} 建议在本次验证中的回报为 ${actualReturnPct}%`,
+  };
+};
+
+const buildSummaryReport = (
+  scope: ReportScope,
+  reports: TrackingReportRecord[],
+  portfolios: StrategyPortfolio[],
+  validations: ValidationRecord[],
+) => {
+  const generatedAt = new Date().toLocaleString('zh-CN');
+  const latestValidations = validations.slice(0, 10);
+  return [
+    `# ${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · 跟踪与验证系统`,
+    '',
+    `- 生成时间：${generatedAt}`,
+    `- 覆盖标的数：${reports.length}`,
+    `- 策略数：${portfolios.length}`,
+    '',
+    '## 组合表现',
+    ...portfolios.map((portfolio) => {
+      const latest = portfolio.history[0];
+      return `- ${portfolio.strategyName}：净值 ${latest?.equity ?? portfolio.initialCash}，现金 ${latest?.cash ?? portfolio.cash}，持仓数 ${portfolio.positions.length}`;
+    }),
+    '',
+    '## 最新 AI 观点',
+    ...reports.slice(0, 8).map((report) =>
+      `- ${report.symbol}：${report.structured.direction} / ${report.structured.action} / 置信度 ${report.structured.confidence}，${report.structured.summary}`,
+    ),
+    '',
+    '## 最近验证结果',
+    ...latestValidations.map((item) =>
+      `- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '正确' : '失效'} · 建议${item.recommendationEffective ? '有效' : '失效'}`,
+    ),
+  ].join('\n');
+};
+
+export const runTrackingCycle = async ({
+  scope,
+  trigger = 'manual',
+  fetchAsset,
+  generateAnalysis,
+}: RunTrackingCycleOptions) => {
+  const state = readState();
+  const nextReports: TrackingReportRecord[] = [];
+  const nextValidations = [...state.validations];
+
+  for (const asset of state.watchlist) {
+    const bundle = await fetchAsset(asset.symbol);
+    const analysis = await generateAnalysis(asset.symbol, bundle);
+    const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
+    const reportDate = new Date().toISOString();
+    const next: TrackingReportRecord = {
+      symbol: asset.symbol,
+      reportDate,
+      quote: bundle.quote,
+      indicators: bundle.packet.snapshot,
+      analysis,
+      structured,
+    };
+
+    const previous = state.latestReports.find((item) => item.symbol === asset.symbol);
+    if (previous) {
+      nextValidations.unshift(createValidation(previous, next));
+    }
+    nextReports.push(next);
+  }
+
+  state.latestReports = nextReports;
+  state.validations = nextValidations.slice(0, 200);
+
+  state.portfolios.forEach((portfolio) => {
+    const weights = desiredWeightsForStrategy(
+      portfolio.strategyId,
+      nextReports,
+      state.watchlist,
+    );
+    rebalancePortfolio(portfolio, weights, nextReports);
+  });
+
+  state.generatedReports.unshift({
+    id: `${scope}-${Date.now()}`,
+    scope,
+    generatedAt: new Date().toISOString(),
+    title: `${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · ${new Date().toLocaleDateString('zh-CN')}`,
+    markdown: buildSummaryReport(scope, nextReports, state.portfolios, state.validations),
+    trigger,
+  });
+  state.generatedReports = state.generatedReports.slice(0, 60);
+
+  writeState(state);
+  return state;
+};

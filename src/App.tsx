@@ -54,6 +54,92 @@ type Quote = {
   exchange?: string;
 };
 
+type TrackingAsset = {
+  symbol: string;
+  name: string;
+  market: string;
+  assetClass: 'equity' | 'etf' | 'crypto' | 'other';
+  tags: string[];
+  priority: number;
+  notes: string;
+  addedAt: string;
+};
+
+type StrategyPortfolio = {
+  strategyId: string;
+  strategyName: string;
+  initialCash: number;
+  cash: number;
+  positions: Array<{
+    symbol: string;
+    name: string;
+    quantity: number;
+    avgCost: number;
+    marketPrice: number;
+    marketValue: number;
+    weight: number;
+    unrealizedPnl: number;
+  }>;
+  trades: Array<{
+    id: string;
+    executedAt: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    quantity: number;
+    price: number;
+    amount: number;
+    reason: string;
+  }>;
+  history: Array<{ date: string; equity: number; cash: number }>;
+  lastRebalancedAt: string | null;
+};
+
+type TrackingReportRecord = {
+  symbol: string;
+  reportDate: string;
+  quote: Quote;
+  indicators: IndicatorSnapshot;
+  analysis: string;
+  structured: {
+    direction: 'bullish' | 'neutral' | 'bearish';
+    confidence: number;
+    action: 'buy' | 'hold' | 'reduce' | 'avoid';
+    horizon: 'short' | 'swing' | 'mid';
+    support: number | null;
+    resistance: number | null;
+    summary: string;
+  };
+};
+
+type ValidationRecord = {
+  symbol: string;
+  reportDate: string;
+  validatedAt: string;
+  actualReturnPct: number;
+  directionCorrect: boolean;
+  recommendationEffective: boolean;
+  strategyAlignmentScore: number;
+  notes: string;
+};
+
+type GeneratedReport = {
+  id: string;
+  scope: 'daily' | 'weekly' | 'monthly';
+  generatedAt: string;
+  title: string;
+  markdown: string;
+  trigger?: 'manual' | 'cron';
+};
+
+type TrackingOverview = {
+  watchlist: TrackingAsset[];
+  portfolios: StrategyPortfolio[];
+  latestReports: TrackingReportRecord[];
+  validations: ValidationRecord[];
+  generatedReports: GeneratedReport[];
+  strategies: Array<{ id: string; name: string; description: string; objective: string }>;
+};
+
 type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
@@ -443,6 +529,7 @@ const openPrintableReport = ({
 };
 
 function App() {
+  const [activeView, setActiveView] = useState<'analyzer' | 'tracking'>('analyzer');
   const [ticker, setTicker] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -459,6 +546,10 @@ function App() {
   const [indicators, setIndicators] = useState<IndicatorSnapshot | null>(null);
   const [analysis, setAnalysis] = useState('');
   const [analysisSource, setAnalysisSource] = useState<'openai' | 'rules' | 'third-party' | null>(null);
+  const [trackingOverview, setTrackingOverview] = useState<TrackingOverview | null>(null);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [trackingAction, setTrackingAction] = useState<string | null>(null);
 
   const [preferences, setPreferences] = useState<AnalysisPreferences>(defaultPreferences);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -532,6 +623,12 @@ function App() {
     }, 60_000);
     return () => window.clearInterval(interval);
   }, [ticker, autoRefresh, preferences]);
+
+  useEffect(() => {
+    if (activeView === 'tracking') {
+      loadTrackingOverview();
+    }
+  }, [activeView]);
 
   const hasCustomProvider = false;
 
@@ -616,9 +713,12 @@ function App() {
   };
 
   const handleSelectResult = (symbol: string) => {
-    setTicker(symbol);
     setSearchQuery(symbol);
     setShowDropdown(false);
+    if (activeView === 'tracking') {
+      return;
+    }
+    setTicker(symbol);
     runWorkflow(symbol);
   };
 
@@ -664,9 +764,15 @@ function App() {
       }
     }
 
-    setTicker(symbolToUse);
     setSearchQuery(symbolToUse);
     setShowDropdown(false);
+
+    if (activeView === 'tracking') {
+      await addTrackingAsset(symbolToUse);
+      return;
+    }
+
+    setTicker(symbolToUse);
     runWorkflow(symbolToUse);
   };
 
@@ -799,6 +905,117 @@ function App() {
     await createPdfReport({ ticker, quote, indicators, preferences, analysis });
   };
 
+  const downloadTrackingReport = (report: GeneratedReport) => {
+    const blob = new Blob([report.markdown], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${report.scope}-${report.generatedAt.slice(0, 10)}.md`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadTrackingOverview = async () => {
+    setTrackingLoading(true);
+    setTrackingError(null);
+    try {
+      const res = await fetch('/api/tracking/overview');
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, '加载跟踪系统失败'));
+      }
+      setTrackingOverview(payload as TrackingOverview);
+    } catch (trackingLoadError: any) {
+      setTrackingError(trackingLoadError.message || '加载跟踪系统失败');
+    } finally {
+      setTrackingLoading(false);
+    }
+  };
+
+  const addTrackingAsset = async (symbol: string) => {
+    setTrackingAction('add');
+    setTrackingError(null);
+    try {
+      const res = await fetch('/api/tracking/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }),
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, '加入关注池失败'));
+      }
+      setTrackingOverview(payload as TrackingOverview);
+      setSearchQuery('');
+      setSearchResults([]);
+    } catch (trackingActionError: any) {
+      setTrackingError(trackingActionError.message || '加入关注池失败');
+    } finally {
+      setTrackingAction(null);
+    }
+  };
+
+  const removeTracking = async (symbol: string) => {
+    setTrackingAction(symbol);
+    setTrackingError(null);
+    try {
+      const res = await fetch(`/api/tracking/watchlist/${encodeURIComponent(symbol)}`, {
+        method: 'DELETE',
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, '移除关注池失败'));
+      }
+      setTrackingOverview(payload as TrackingOverview);
+    } catch (trackingActionError: any) {
+      setTrackingError(trackingActionError.message || '移除关注池失败');
+    } finally {
+      setTrackingAction(null);
+    }
+  };
+
+  const setPriorityLevel = async (symbol: string, priority: number) => {
+    setTrackingAction(`priority-${symbol}-${priority}`);
+    setTrackingError(null);
+    try {
+      const res = await fetch(`/api/tracking/watchlist/${encodeURIComponent(symbol)}/priority`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ priority }),
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, '更新优先级失败'));
+      }
+      setTrackingOverview(payload as TrackingOverview);
+    } catch (trackingPriorityError: any) {
+      setTrackingError(trackingPriorityError.message || '更新优先级失败');
+    } finally {
+      setTrackingAction(null);
+    }
+  };
+
+  const runTrackingScope = async (scope: 'daily' | 'weekly' | 'monthly') => {
+    setTrackingAction(scope);
+    setTrackingError(null);
+    try {
+      const res = await fetch('/api/tracking/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope }),
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, `生成${scope}报告失败`));
+      }
+      setTrackingOverview(payload as TrackingOverview);
+    } catch (trackingRunError: any) {
+      setTrackingError(trackingRunError.message || '运行跟踪系统失败');
+    } finally {
+      setTrackingAction(null);
+    }
+  };
+
   const toggleDimension = (dimension: AnalysisDimension) => {
     setPreferences((current) => {
       const exists = current.dimensions.includes(dimension);
@@ -904,6 +1121,455 @@ function App() {
       return <p key={index} className="mb-2 text-sm leading-6 text-slate-300">{trimmed}</p>;
     });
 
+  const trackingTopPortfolios = trackingOverview?.portfolios || [];
+  const latestTrackingReports = trackingOverview?.latestReports || [];
+  const latestTrackingValidations = trackingOverview?.validations.slice(0, 8) || [];
+  const latestGeneratedReports = trackingOverview?.generatedReports.slice(0, 6) || [];
+  const watchlist = trackingOverview?.watchlist || [];
+  const sortedWatchlist = [...watchlist].sort(
+    (left, right) => right.priority - left.priority || left.addedAt.localeCompare(right.addedAt),
+  );
+  const priorityAssets = sortedWatchlist.filter((item) => item.priority > 0 || item.tags.includes('重点'));
+  const allValidations = trackingOverview?.validations || [];
+  const reportBySymbol = new Map(latestTrackingReports.map((item) => [item.symbol, item]));
+  const watchlistBySymbol = new Map(sortedWatchlist.map((item) => [item.symbol, item]));
+  const directionHitRate = allValidations.length
+    ? Math.round((allValidations.filter((item) => item.directionCorrect).length / allValidations.length) * 100)
+    : 0;
+  const recommendationHitRate = allValidations.length
+    ? Math.round((allValidations.filter((item) => item.recommendationEffective).length / allValidations.length) * 100)
+    : 0;
+  const avgValidationReturn = allValidations.length
+    ? allValidations.reduce((sum, item) => sum + item.actualReturnPct, 0) / allValidations.length
+    : 0;
+  const avgAlignmentScore = allValidations.length
+    ? allValidations.reduce((sum, item) => sum + item.strategyAlignmentScore, 0) / allValidations.length
+    : 0;
+  const validationBuckets: Array<{ symbol: string; count: number; wins: number; avgReturn: number }> = Object.values(
+    allValidations.reduce<Record<string, { symbol: string; count: number; wins: number; avgReturn: number }>>((acc, item) => {
+      const current = acc[item.symbol] || { symbol: item.symbol, count: 0, wins: 0, avgReturn: 0 };
+      current.count += 1;
+      current.wins += item.directionCorrect ? 1 : 0;
+      current.avgReturn += item.actualReturnPct;
+      acc[item.symbol] = current;
+      return acc;
+    }, {}),
+  ) as Array<{ symbol: string; count: number; wins: number; avgReturn: number }>;
+
+  const topValidatedSymbols = validationBuckets
+    .map((item) => ({
+      ...item,
+      hitRate: item.count ? Math.round((item.wins / item.count) * 100) : 0,
+      avgReturn: item.count ? item.avgReturn / item.count : 0,
+    }))
+    .sort((left, right) => right.hitRate - left.hitRate || right.avgReturn - left.avgReturn)
+    .slice(0, 5);
+
+  const marketValidationStats = (Object.values(
+    allValidations.reduce<Record<string, { market: string; count: number; hits: number; effective: number; avgReturn: number }>>((acc, item) => {
+      const market = watchlistBySymbol.get(item.symbol)?.market || 'GLOBAL';
+      const current = acc[market] || { market, count: 0, hits: 0, effective: 0, avgReturn: 0 };
+      current.count += 1;
+      current.hits += item.directionCorrect ? 1 : 0;
+      current.effective += item.recommendationEffective ? 1 : 0;
+      current.avgReturn += item.actualReturnPct;
+      acc[market] = current;
+      return acc;
+    }, {}),
+  ) as Array<{ market: string; count: number; hits: number; effective: number; avgReturn: number }>)
+    .map((item) => ({
+      ...item,
+      hitRate: item.count ? Math.round((item.hits / item.count) * 100) : 0,
+      effectiveRate: item.count ? Math.round((item.effective / item.count) * 100) : 0,
+      avgReturn: item.count ? item.avgReturn / item.count : 0,
+    }))
+    .sort((left, right) => right.hitRate - left.hitRate || right.avgReturn - left.avgReturn)
+    .slice(0, 5);
+
+  const strategyFitStats = trackingTopPortfolios.map((portfolio) => {
+    const heldSymbols = portfolio.positions.map((position) => position.symbol);
+    const matchingValidations = allValidations.filter((item) => heldSymbols.includes(item.symbol));
+    const matchingReports = heldSymbols
+      .map((symbol) => reportBySymbol.get(symbol))
+      .filter((item): item is TrackingReportRecord => Boolean(item));
+    const latestEquity = portfolio.history[0]?.equity ?? portfolio.initialCash;
+    const returnPct = ((latestEquity - portfolio.initialCash) / portfolio.initialCash) * 100;
+    const validationHitRate = matchingValidations.length
+      ? Math.round((matchingValidations.filter((item) => item.directionCorrect).length / matchingValidations.length) * 100)
+      : 0;
+    const avgConfidence = matchingReports.length
+      ? matchingReports.reduce((sum, item) => sum + item.structured.confidence, 0) / matchingReports.length
+      : 0;
+    const fitScore = Math.max(
+      0,
+      Math.min(
+        100,
+        Math.round((validationHitRate * 0.45) + (avgConfidence * 0.35) + (Math.max(-20, Math.min(20, returnPct)) + 20) * 0.5),
+      ),
+    );
+
+    return {
+      strategyId: portfolio.strategyId,
+      strategyName: portfolio.strategyName,
+      heldCount: heldSymbols.length,
+      validationCount: matchingValidations.length,
+      validationHitRate,
+      avgConfidence,
+      returnPct,
+      fitScore,
+    };
+  }).sort((left, right) => right.fitScore - left.fitScore);
+
+  const renderTrackingView = () => (
+    <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <section className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Tracking Intelligence</p>
+          <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-50">关注池 + 模拟盘 + AI 验证体系</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+            现在这套系统会把自选标的、5 个策略代理人、模拟盘调仓、AI 日报与后验验证放在同一条研究链路里。
+          </p>
+          <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <InfoCard title="关注池" value={`${watchlist.length} 只`} subtitle="跨市场统一跟踪" icon={<Search className="h-4 w-4" />} />
+            <InfoCard title="策略代理人" value={`${trackingOverview?.strategies.length || 5} 个`} subtitle="完整风格矩阵" icon={<BrainCircuit className="h-4 w-4" />} />
+            <InfoCard title="验证样本" value={`${trackingOverview?.validations.length || 0} 条`} subtitle="AI 与市场结果对照" icon={<Gauge className="h-4 w-4" />} />
+            <InfoCard title="重点标的" value={`${priorityAssets.length} 只`} subtitle="仅这些会调用 AI 生成跟踪报告" icon={<FileText className="h-4 w-4" />} />
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.98))] p-6 text-white shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">Orchestration</p>
+              <h3 className="mt-2 text-xl font-bold text-slate-50">自动报告与验证运行台</h3>
+            </div>
+            <RefreshCw className={`h-5 w-5 text-sky-200 ${trackingLoading ? 'animate-spin' : ''}`} />
+          </div>
+          <div className="mt-6 flex flex-wrap gap-2">
+            {(['daily', 'weekly', 'monthly'] as const).map((scope) => (
+              <button
+                key={scope}
+                type="button"
+                onClick={() => runTrackingScope(scope)}
+                disabled={trackingAction != null}
+                className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {trackingAction === scope ? '运行中...' : `生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}`}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={loadTrackingOverview}
+              disabled={trackingLoading}
+              className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              刷新总览
+            </button>
+          </div>
+          <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">
+            已内置 5 个策略代理人：
+            全球价值基金风格、全球成长基金风格、宏观对冲风格、幻方量化风格、ETF 轮动风格。
+            <div className="mt-2 text-xs text-slate-400">
+              当前只有打上“重点”标签的标的会调用 AI；其余标的只做规则分析和验证，用来控制 API key 消耗。
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {trackingError && (
+        <div className="mt-6 rounded-[28px] border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">
+          {trackingError}
+        </div>
+      )}
+
+      <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Validation Panel</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">AI 结论验证面板</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-400">
+              把 AI 判断和后续市场表现、策略适配结果直接对照，判断它在哪些资产和哪些环境里更可靠。
+            </p>
+          </div>
+          <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+            样本数 {allValidations.length}
+          </div>
+        </div>
+        <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <InfoCard title="方向命中率" value={`${directionHitRate}%`} subtitle="AI 多空判断后验准确度" icon={<Gauge className="h-4 w-4" />} />
+          <InfoCard title="建议有效率" value={`${recommendationHitRate}%`} subtitle="买入/减仓建议可执行性" icon={<BrainCircuit className="h-4 w-4" />} />
+          <InfoCard title="平均验证收益" value={`${formatNumber(avgValidationReturn)}%`} subtitle="报告发出后的平均表现" icon={<TrendingUp className="h-4 w-4" />} />
+          <InfoCard title="平均策略适配度" value={`${formatNumber(avgAlignmentScore)}`} subtitle="AI 与代理人动作一致性" icon={<ShieldAlert className="h-4 w-4" />} />
+        </div>
+        <div className="mt-6 grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">高质量验证标的</div>
+            <div className="mt-4 space-y-3">
+              {topValidatedSymbols.length === 0 ? (
+                <div className="text-sm text-slate-400">跑过几轮日报后，这里会自动出现命中率最高的标的。</div>
+              ) : topValidatedSymbols.map((item) => (
+                <div key={item.symbol} className="flex items-center justify-between rounded-2xl border border-white/8 bg-slate-950/30 px-3 py-3">
+                  <div>
+                    <div className="font-semibold text-slate-100">{item.symbol}</div>
+                    <div className="text-xs text-slate-500">样本 {item.count} · 平均收益 {formatNumber(item.avgReturn)}%</div>
+                  </div>
+                  <div className="text-sm font-semibold text-emerald-300">{item.hitRate}%</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">验证解读</div>
+            <div className="mt-4 space-y-3 text-sm leading-6 text-slate-300">
+              <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                当前方向命中率为 <span className="font-semibold text-slate-100">{directionHitRate}%</span>，建议有效率为 <span className="font-semibold text-slate-100">{recommendationHitRate}%</span>。
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                如果方向命中率高但建议有效率低，说明 AI 方向判断还不错，但执行建议需要继续按策略风格校准。
+              </div>
+              <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                如果平均适配度持续走高，说明 5 个代理人和 AI 结论开始形成更稳定的协同关系，这时周报和月报的参考价值会更高。
+              </div>
+              {marketValidationStats[0] && (
+                <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  当前命中率最稳定的市场是 <span className="font-semibold text-slate-100">{marketValidationStats[0].market}</span>，
+                  方向命中率 <span className="font-semibold text-slate-100">{marketValidationStats[0].hitRate}%</span>，
+                  平均验证收益 <span className="font-semibold text-slate-100">{formatNumber(marketValidationStats[0].avgReturn)}%</span>。
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">分市场命中率</div>
+            <div className="mt-4 space-y-3">
+              {marketValidationStats.length === 0 ? (
+                <div className="text-sm text-slate-400">样本还不够，跑几轮日报后这里会自动拆出 A 股、美股、港股、加密的命中率差异。</div>
+              ) : marketValidationStats.map((item) => (
+                <div key={item.market} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-100">{item.market}</div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(item.hitRate)}`}>
+                      命中率 {item.hitRate}%
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    样本 {item.count} · 建议有效率 {item.effectiveRate}% · 平均收益 {formatNumber(item.avgReturn)}%
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+            <div className="text-sm font-semibold text-slate-200">分策略风格适配度</div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {strategyFitStats.map((item) => (
+                <div key={item.strategyId} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold text-slate-100">{item.strategyName}</div>
+                      <div className="mt-1 text-xs text-slate-500">持仓 {item.heldCount} · 验证样本 {item.validationCount}</div>
+                    </div>
+                    <div className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(item.fitScore)}`}>
+                      适配度 {item.fitScore}
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2 text-xs text-slate-400">
+                    <div className="flex items-center justify-between">
+                      <span>当前组合收益</span>
+                      <span>{formatNumber(item.returnPct)}%</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>持仓命中率</span>
+                      <span>{item.validationHitRate}%</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>平均置信度</span>
+                      <span>{formatNumber(item.avgConfidence)}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="mt-8 grid gap-8 xl:grid-cols-[1.05fr_0.95fr]">
+        <div className="space-y-8">
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-bold text-slate-50">关注池</h3>
+                <p className="text-sm text-slate-400">在顶部输入中文名、代码或币种后点击按钮，即可加入跟踪体系。</p>
+              </div>
+              <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+                {watchlist.length} Assets
+              </span>
+            </div>
+            <div className="mt-5 space-y-3">
+              {sortedWatchlist.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+                  先把重点标的加入关注池，例如：比特币、特斯拉、吉林化纤、贵州茅台。
+                </div>
+              ) : sortedWatchlist.map((asset) => {
+                const report = latestTrackingReports.find((item) => item.symbol === asset.symbol);
+                return (
+                  <div key={asset.symbol} className="flex flex-col gap-3 rounded-[26px] border border-white/8 bg-white/4 p-4 lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-lg font-bold text-slate-100">{asset.symbol}</div>
+                        <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${asset.priority > 0 ? metricTone(45 + asset.priority * 15) : 'border border-white/10 bg-white/5 text-slate-500'}`}>
+                          {asset.priority > 0 ? `AI 优先级 P${asset.priority}` : '规则跟踪'}
+                        </span>
+                      </div>
+                      <div className="text-sm text-slate-400">{asset.name} · {asset.market} · {asset.assetClass}</div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {asset.tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                              tag === '重点'
+                                ? 'border border-amber-300/25 bg-amber-300/10 text-amber-200'
+                                : 'border border-white/10 bg-white/5 text-slate-400'
+                            }`}
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                        {asset.tags.length === 0 && (
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                            普通跟踪
+                          </span>
+                        )}
+                      </div>
+                      {report && (
+                        <div className="mt-2 text-xs text-slate-500">
+                          {report.structured.direction} / {report.structured.action} / 置信度 {report.structured.confidence}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap gap-2">
+                        {[3, 2, 1, 0].map((priority) => (
+                          <button
+                            key={priority}
+                            type="button"
+                            onClick={() => setPriorityLevel(asset.symbol, priority)}
+                            disabled={trackingAction === `priority-${asset.symbol}-${priority}`}
+                            className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
+                              asset.priority === priority
+                                ? priority === 0
+                                  ? 'border border-white/10 bg-white/10 text-slate-100'
+                                  : metricTone(45 + priority * 15)
+                                : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                            } disabled:opacity-50`}
+                          >
+                            {trackingAction === `priority-${asset.symbol}-${priority}`
+                              ? '处理中...'
+                              : priority === 0
+                                ? '普通'
+                                : `P${priority}`}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeTracking(asset.symbol)}
+                        disabled={trackingAction === asset.symbol}
+                        className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 disabled:opacity-50"
+                      >
+                        {trackingAction === asset.symbol ? '处理中...' : '移除'}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <h3 className="text-lg font-bold text-slate-50">策略代理人模拟盘</h3>
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              {trackingTopPortfolios.map((portfolio) => {
+                const latest = portfolio.history[0];
+                return (
+                  <div key={portfolio.strategyId} className="rounded-[26px] border border-white/8 bg-white/4 p-4">
+                    <div className="text-sm text-slate-500">{portfolio.strategyName}</div>
+                    <div className="mt-2 text-2xl font-black text-slate-50">{formatCompact(latest?.equity ?? portfolio.initialCash)}</div>
+                    <div className="mt-2 text-sm text-slate-400">现金 {formatCompact(latest?.cash ?? portfolio.cash)} · 持仓 {portfolio.positions.length} 只</div>
+                    <div className="mt-3 space-y-2">
+                      {portfolio.positions.slice(0, 3).map((position) => (
+                        <div key={position.symbol} className="flex items-center justify-between text-sm text-slate-300">
+                          <span>{position.symbol}</span>
+                          <span>{formatNumber(position.weight)}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-8">
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <h3 className="text-lg font-bold text-slate-50">最近验证结果</h3>
+            <div className="mt-5 space-y-3">
+              {latestTrackingValidations.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+                  运行一次日报后，这里会开始积累 AI 结论与市场表现的验证结果。
+                </div>
+              ) : latestTrackingValidations.map((item, index) => (
+                <div key={`${item.symbol}-${index}`} className="rounded-[24px] border border-white/8 bg-white/4 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-slate-100">{item.symbol}</div>
+                    <div className={`text-sm font-semibold ${item.directionCorrect ? 'text-emerald-300' : 'text-rose-300'}`}>
+                      {item.directionCorrect ? '方向命中' : '方向失效'}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-sm text-slate-400">
+                    收益 {formatNumber(item.actualReturnPct)}% · 建议{item.recommendationEffective ? '有效' : '失效'} · 适配度 {formatNumber(item.strategyAlignmentScore)}
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">{item.notes}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <h3 className="text-lg font-bold text-slate-50">报告中心</h3>
+            <div className="mt-5 space-y-3">
+              {latestGeneratedReports.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+                  运行日报、周报或月报后，这里会自动归档报告。
+                </div>
+              ) : latestGeneratedReports.map((report) => (
+                <div key={report.id} className="flex items-center justify-between rounded-[24px] border border-white/8 bg-white/4 p-4">
+                  <div>
+                    <div className="font-semibold text-slate-100">{report.title}</div>
+                    <div className="text-xs text-slate-500">
+                      {new Date(report.generatedAt).toLocaleString('zh-CN')} · {report.trigger === 'cron' ? '自动生成' : '手动生成'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => downloadTrackingReport(report)}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                  >
+                    下载报告
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+
   return (
     <div className="min-h-screen bg-transparent text-slate-100">
       <div className="pointer-events-none fixed inset-0 overflow-hidden">
@@ -923,6 +1589,23 @@ function App() {
             </div>
           </div>
 
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveView('analyzer')}
+              className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${activeView === 'analyzer' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'}`}
+            >
+              实时分析
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveView('tracking')}
+              className={`rounded-2xl px-3 py-2 text-sm font-semibold transition ${activeView === 'tracking' ? 'border border-sky-300/20 bg-sky-100 text-slate-950' : 'border border-white/10 bg-white/5 text-slate-200 hover:bg-white/10'}`}
+            >
+              跟踪系统
+            </button>
+          </div>
+
           <form onSubmit={handleSearch} className="relative w-full lg:w-auto" ref={searchRef}>
             <div className="relative rounded-[28px] border border-white/10 bg-white/6 p-1.5 shadow-[0_12px_40px_rgba(0,0,0,0.35)] backdrop-blur-2xl">
               <Search className="pointer-events-none absolute left-5 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-500" />
@@ -936,10 +1619,10 @@ function App() {
               />
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || trackingAction != null}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-[18px] border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : '启动分析'}
+                {loading || trackingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : activeView === 'tracking' ? '加入关注池' : '启动分析'}
               </button>
             </div>
 
@@ -968,8 +1651,7 @@ function App() {
           </form>
         </div>
       </header>
-
-      <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      {activeView === 'tracking' ? renderTrackingView() : <main className="relative mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         <section className="mb-8 grid gap-4 lg:grid-cols-[1.35fr_0.9fr]">
           <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
@@ -1317,7 +1999,7 @@ function App() {
             </aside>
           </div>
         )}
-      </main>
+      </main>}
 
     </div>
   );
