@@ -35,6 +35,7 @@ const API_CONFIG = {
 
 const TEXT_MODEL = "gpt-5.4";
 const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+const DEFAULT_TEXT_MODEL_FALLBACKS = [TEXT_MODEL, "deepseek-v3.2-exp"];
 
 const defaultServerProvider = {
   baseUrl: API_CONFIG.baseUrl,
@@ -269,6 +270,11 @@ const isTransientLlmError = (error: unknown) => {
   return /LLM request failed/i.test(message) && /( 429 )|upstream_error|负载已饱和|model_not_found/i.test(message);
 };
 
+const isModelRoutingError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /model_not_found|upstream_error|负载已饱和|does not exist|unsupported/i.test(message);
+};
+
 const buildRuleBasedRefinements = (candidates: any[]) =>
   candidates
     .map((item) => {
@@ -362,6 +368,43 @@ const generateWithThirdParty = async ({
   }
 
   throw lastError || new Error('Third-party LLM request failed');
+};
+
+const generateWithDefaultProvider = async ({
+  messages,
+  customConfig,
+}: {
+  messages: ThirdPartyMessage[];
+  customConfig?: Record<string, unknown>;
+}) => {
+  let lastError: unknown = null;
+  const models = Array.from(new Set(DEFAULT_TEXT_MODEL_FALLBACKS.filter(Boolean)));
+
+  for (const model of models) {
+    try {
+      const result = await generateWithThirdParty({
+        messages,
+        config: {
+          ...defaultServerProvider,
+          model,
+        },
+        customConfig,
+      });
+      return {
+        ...result,
+        modelUsed: model,
+      };
+    } catch (error) {
+      lastError = error;
+      if (model !== models[models.length - 1] && isModelRoutingError(error)) {
+        console.warn(`Model ${model} unavailable on default gateway, retrying with fallback model.`);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError || new Error('No default LLM models available');
 };
 
 const maskModelLabel = (config: ThirdPartyLLMConfig) =>
@@ -581,9 +624,8 @@ const generateInstitutionalAnalysis = async (
 ) => {
   const prompt = buildPrompt(ticker, bundle, preferences);
   try {
-    const result = await generateWithThirdParty({
+    const result = await generateWithDefaultProvider({
       messages: [{ role: 'user', content: prompt }],
-      config: defaultServerProvider,
       customConfig: { temperature: 0.3 },
     });
     return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
@@ -693,10 +735,14 @@ export function createApp() {
       const thirdPartyConfig = extractThirdPartyConfig(req);
 
       if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query)) {
-        const result = await generateWithThirdParty({
-          messages: [{ role: 'user', content: `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.` }],
-          config: thirdPartyConfig || defaultServerProvider,
-        });
+        const result = thirdPartyConfig
+          ? await generateWithThirdParty({
+              messages: [{ role: 'user', content: `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.` }],
+              config: thirdPartyConfig,
+            })
+          : await generateWithDefaultProvider({
+              messages: [{ role: 'user', content: `What is the Yahoo Finance ticker for "${query}"? Return ticker only, such as 600519.SS, AAPL, 0700.HK or BTC-USD.` }],
+            });
         const maybeTicker = result.text.trim().replace(/`/g, '');
         if (maybeTicker) {
           try {
@@ -786,15 +832,21 @@ export function createApp() {
       const thirdPartyConfig = extractThirdPartyConfig(req);
       const prompt = buildPrompt(ticker, bundle, preferences);
       try {
-        const result = await generateWithThirdParty({
-          messages: [{ role: 'user', content: prompt }],
-          config: thirdPartyConfig || defaultServerProvider,
-          customConfig: { temperature: 0.3 },
-        });
+        const result = thirdPartyConfig
+          ? await generateWithThirdParty({
+              messages: [{ role: 'user', content: prompt }],
+              config: thirdPartyConfig,
+              customConfig: { temperature: 0.3 },
+            })
+          : await generateWithDefaultProvider({
+              messages: [{ role: 'user', content: prompt }],
+              customConfig: { temperature: 0.3 },
+            });
 
         res.json({
           analysis: result.text || buildFallbackAnalysis(ticker, bundle, preferences),
           source: thirdPartyConfig ? 'third-party' : 'openai',
+          modelUsed: 'modelUsed' in result ? result.modelUsed : (thirdPartyConfig?.model || defaultServerProvider.model),
         });
       } catch (error) {
         if (isTransientLlmError(error)) {
@@ -907,9 +959,8 @@ export function createApp() {
       ].join('\n');
 
       try {
-        const result = await generateWithThirdParty({
+        const result = await generateWithDefaultProvider({
           messages: [{ role: 'user', content: prompt }],
-          config: defaultServerProvider,
           customConfig: { temperature: 0.2 },
         });
 
@@ -936,7 +987,7 @@ export function createApp() {
         return res.json({
           refined,
           topN,
-          model: defaultServerProvider.model,
+          model: result.modelUsed,
         });
       } catch (error) {
         if (isTransientLlmError(error)) {

@@ -946,6 +946,15 @@ function App() {
   const [providerDebugInfo, setProviderDebugInfo] = useState<ProviderDebugInfo | null>(null);
   const [testTransport, setTestTransport] = useState<'server' | 'browser'>('browser');
 
+  const getLatestTrackingOverview = () => readStoredTrackingOverview();
+
+  const commitTrackingOverview = (overview: TrackingOverview) => {
+    const normalized = normalizeTrackingOverview(overview);
+    setTrackingOverview(normalized);
+    persistTrackingOverview(normalized);
+    return normalized;
+  };
+
   useEffect(() => {
     try {
       const saved = window.localStorage.getItem(providerStorageKey);
@@ -957,6 +966,7 @@ function App() {
     }
     setTrackingOverview(readStoredTrackingOverview());
     setScannerSnapshots(readStoredScannerSnapshots());
+    setCandidatePool(readStoredCandidatePool());
   }, []);
 
   useEffect(() => {
@@ -1408,8 +1418,7 @@ function App() {
     setTrackingError(null);
     try {
       const overview = readStoredTrackingOverview();
-      setTrackingOverview(overview);
-      persistTrackingOverview(overview);
+      commitTrackingOverview(overview);
     } catch (trackingLoadError: any) {
       setTrackingError(trackingLoadError.message || '加载跟踪系统失败');
     } finally {
@@ -1506,6 +1515,8 @@ function App() {
       const refinements = Array.isArray(payload.refined) ? payload.refined : [];
       if (payload.degraded) {
         setScannerError('AI 上游繁忙，本次展示的是规则降级精筛结果；系统已经实际触发过 AI 请求并自动回退。');
+      } else if (payload.model && payload.model !== 'gpt-5.4') {
+        setScannerError(`AI 精筛已自动切换到 ${payload.model} 执行，当前展示的是实际模型返回结果。`);
       }
       setScannerRefinements(refinements);
       if (scannerSnapshots.length > 0) {
@@ -1547,9 +1558,9 @@ function App() {
     setTrackingError(null);
     try {
       const nextSymbol = symbol.trim().toUpperCase();
-      const current = trackingOverview || readStoredTrackingOverview();
+      const current = getLatestTrackingOverview();
       if (current.watchlist.some((item) => item.symbol === nextSymbol)) {
-        setTrackingOverview(current);
+        commitTrackingOverview(current);
         return;
       }
 
@@ -1561,7 +1572,7 @@ function App() {
         setTrackingError(`已加入关注池，但行情预检失败：${verificationError.message || '未知错误'}`);
       }
 
-      const overview = normalizeTrackingOverview({
+      const overview = commitTrackingOverview({
         ...current,
         watchlist: [
           {
@@ -1577,8 +1588,6 @@ function App() {
           ...current.watchlist,
         ],
       });
-      setTrackingOverview(overview);
-      persistTrackingOverview(overview);
       setSearchQuery('');
       setSearchResults([]);
     } catch (trackingActionError: any) {
@@ -1592,13 +1601,11 @@ function App() {
     setTrackingAction(symbol);
     setTrackingError(null);
     try {
-      const current = trackingOverview || readStoredTrackingOverview();
-      const overview = normalizeTrackingOverview({
+      const current = getLatestTrackingOverview();
+      commitTrackingOverview({
         ...current,
         watchlist: current.watchlist.filter((item) => item.symbol !== symbol.toUpperCase()),
       });
-      setTrackingOverview(overview);
-      persistTrackingOverview(overview);
     } catch (trackingActionError: any) {
       setTrackingError(trackingActionError.message || '移除关注池失败');
     } finally {
@@ -1610,9 +1617,9 @@ function App() {
     setTrackingAction(`priority-${symbol}-${priority}`);
     setTrackingError(null);
     try {
-      const current = trackingOverview || readStoredTrackingOverview();
+      const current = getLatestTrackingOverview();
       const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
-      const overview = normalizeTrackingOverview({
+      commitTrackingOverview({
         ...current,
         watchlist: current.watchlist.map((item) =>
           item.symbol !== symbol.toUpperCase()
@@ -1627,8 +1634,6 @@ function App() {
               },
         ),
       });
-      setTrackingOverview(overview);
-      persistTrackingOverview(overview);
     } catch (trackingPriorityError: any) {
       setTrackingError(trackingPriorityError.message || '更新优先级失败');
     } finally {
@@ -1719,7 +1724,7 @@ function App() {
     setTrackingAction(scope);
     setTrackingError(null);
     try {
-      const currentOverview = trackingOverview || readStoredTrackingOverview();
+      const currentOverview = getLatestTrackingOverview();
       if ((currentOverview.watchlist?.length || 0) === 0) {
         throw new Error(`请先加入至少一个关注标的，再生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}。`);
       }
@@ -1745,8 +1750,7 @@ function App() {
           ...restReports,
         ];
       }
-      setTrackingOverview(overview);
-      persistTrackingOverview(overview);
+      commitTrackingOverview(overview);
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {
@@ -2098,6 +2102,7 @@ function App() {
             当前规则层返回前 40 名候选；AI 只看前 24 名，再压缩出前 8 个更值得你直接处理的标的。
             <div className="mt-2 text-xs text-slate-400">
               规则扫描不烧 token，只有“AI 精筛前 24 名”会调用 `gpt-5.4`。
+              若默认模型不可用，系统会自动切换到可用的文本模型继续精筛。
             </div>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
