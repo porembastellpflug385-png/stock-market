@@ -528,6 +528,40 @@ const compactScannerSnapshotsForValidation = (snapshots: ScannerSnapshot[]) =>
     })),
   }));
 
+const compactTrackingOverviewForRun = (overview: TrackingOverview) => ({
+  watchlist: (overview.watchlist || []).map((item) => ({
+    symbol: item.symbol,
+    name: item.name,
+    market: item.market,
+    assetClass: item.assetClass,
+    tags: item.tags,
+    priority: item.priority,
+    notes: item.notes,
+    addedAt: item.addedAt,
+  })),
+  strategies: overview.strategies || [],
+  portfolios: (overview.portfolios || []).map((portfolio) => ({
+    strategyId: portfolio.strategyId,
+    strategyName: portfolio.strategyName,
+    initialCash: portfolio.initialCash,
+    cash: portfolio.cash,
+    positions: portfolio.positions,
+    trades: portfolio.trades.slice(0, 40),
+    history: portfolio.history.slice(0, 30),
+    lastRebalancedAt: portfolio.lastRebalancedAt,
+  })),
+  latestReports: (overview.latestReports || []).slice(0, 20).map((report) => ({
+    symbol: report.symbol,
+    reportDate: report.reportDate,
+    quote: report.quote,
+    indicators: report.indicators,
+    analysis: report.analysis.slice(0, 4000),
+    structured: report.structured,
+  })),
+  validations: (overview.validations || []).slice(0, 80),
+  generatedReports: [],
+});
+
 const readStoredCandidatePool = (): CandidatePoolItem[] => {
   try {
     const raw = window.localStorage.getItem(candidatePoolStorageKey);
@@ -1746,11 +1780,12 @@ function App() {
       if ((currentOverview.watchlist?.length || 0) === 0) {
         throw new Error(`请先加入至少一个关注标的，再生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}。`);
       }
+      const compactOverview = compactTrackingOverviewForRun(currentOverview);
 
       const res = await fetch('/api/tracking/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, state: currentOverview }),
+        body: JSON.stringify({ scope, state: compactOverview }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
