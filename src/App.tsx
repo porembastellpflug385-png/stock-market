@@ -1,13 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
+import jsPDF from 'jspdf';
 import {
   Activity,
   AlertCircle,
   BrainCircuit,
-  Download,
   FileText,
   Gauge,
   Loader2,
-  Printer,
+  Download,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -234,7 +234,7 @@ const createReportMarkdown = ({
   ].join('\n');
 };
 
-const openPrintableReport = ({
+const createReportHtml = ({
   ticker,
   quote,
   indicators,
@@ -248,44 +248,37 @@ const openPrintableReport = ({
   analysis: string;
 }) => {
   const generatedAt = new Date().toLocaleString('zh-CN');
-  const printableWindow = window.open('', '_blank', 'noopener,noreferrer');
-  if (!printableWindow) return;
-
-  const html = `
+  return `
     <!doctype html>
     <html lang="zh-CN">
       <head>
         <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>${escapeHtml(ticker)} 专业分析报告</title>
         <style>
           :root {
             color-scheme: light;
-            --bg: #eef3f8;
-            --card: rgba(255,255,255,0.92);
+            --bg: #eef4f9;
+            --card: rgba(255,255,255,0.94);
             --ink: #0f172a;
-            --muted: #5b6b83;
+            --muted: #526179;
             --line: rgba(15,23,42,0.08);
             --accent: #0f766e;
-            --accent-soft: rgba(15,118,110,0.08);
+            --accent-soft: rgba(15,118,110,0.10);
           }
           * { box-sizing: border-box; }
           body {
             margin: 0;
-            font-family: "SF Pro Display","PingFang SC","Helvetica Neue",Arial,sans-serif;
-            background: linear-gradient(180deg, #f6f9fc 0%, var(--bg) 100%);
+            background: linear-gradient(180deg, #f8fbff 0%, var(--bg) 100%);
             color: var(--ink);
+            font-family: "SF Pro Display","PingFang SC","Helvetica Neue",Arial,sans-serif;
           }
-          .page {
-            width: 960px;
-            margin: 0 auto;
-            padding: 40px 28px 64px;
-          }
+          .page { width: 980px; margin: 0 auto; padding: 40px 24px 64px; }
           .hero, .card {
             background: var(--card);
             border: 1px solid var(--line);
             border-radius: 28px;
-            box-shadow: 0 24px 60px rgba(15, 23, 42, 0.08);
-            backdrop-filter: blur(20px);
+            box-shadow: 0 24px 60px rgba(15,23,42,0.08);
           }
           .hero {
             padding: 28px;
@@ -298,43 +291,19 @@ const openPrintableReport = ({
             color: var(--muted);
             font-weight: 700;
           }
-          h1 {
-            margin: 14px 0 8px;
-            font-size: 34px;
-            line-height: 1.05;
-          }
-          .sub {
-            color: var(--muted);
-            font-size: 14px;
-            line-height: 1.7;
-          }
-          .hero-grid, .metric-grid {
-            display: grid;
-            gap: 14px;
-          }
-          .hero-grid {
-            grid-template-columns: 1.4fr 0.8fr;
-            margin-top: 24px;
-          }
-          .metric-grid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            margin-top: 18px;
-          }
+          h1 { margin: 14px 0 8px; font-size: 34px; line-height: 1.05; }
+          .sub { color: var(--muted); font-size: 14px; line-height: 1.7; }
+          .hero-grid, .metric-grid { display: grid; gap: 14px; }
+          .hero-grid { grid-template-columns: 1.4fr 0.8fr; margin-top: 24px; }
+          .metric-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 18px; }
           .metric, .panel {
             border: 1px solid var(--line);
             border-radius: 22px;
             background: rgba(255,255,255,0.88);
             padding: 16px 18px;
           }
-          .metric-label, .panel-label {
-            color: var(--muted);
-            font-size: 12px;
-            margin-bottom: 8px;
-          }
-          .metric-value {
-            font-size: 22px;
-            font-weight: 700;
-          }
+          .metric-label, .panel-label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+          .metric-value { font-size: 22px; font-weight: 700; }
           .score {
             display: inline-flex;
             align-items: center;
@@ -345,36 +314,11 @@ const openPrintableReport = ({
             font-weight: 700;
             margin-bottom: 14px;
           }
-          .section {
-            margin-top: 18px;
-          }
-          .card {
-            padding: 24px;
-            margin-top: 18px;
-          }
-          h2 {
-            font-size: 20px;
-            margin: 20px 0 10px;
-          }
-          h3 {
-            font-size: 16px;
-            margin: 16px 0 8px;
-          }
-          p, li {
-            color: #334155;
-            font-size: 14px;
-            line-height: 1.8;
-          }
-          ul {
-            margin: 8px 0 8px 18px;
-            padding: 0;
-          }
+          .card { padding: 24px; margin-top: 18px; }
+          h2 { font-size: 20px; margin: 20px 0 10px; }
+          h3 { font-size: 16px; margin: 16px 0 8px; }
+          p, li { color: #334155; font-size: 14px; line-height: 1.8; }
           .report-spacer { height: 10px; }
-          @media print {
-            body { background: white; }
-            .page { width: auto; padding: 0; }
-            .hero, .card { box-shadow: none; }
-          }
         </style>
       </head>
       <body>
@@ -403,7 +347,7 @@ const openPrintableReport = ({
               <div class="metric"><div class="metric-label">支撑 / 阻力</div><div class="metric-value">${escapeHtml(formatNumber(indicators.supportResistance.support))} / ${escapeHtml(formatNumber(indicators.supportResistance.resistance))}</div></div>
             </div>
           </section>
-          <section class="card section">
+          <section class="card">
             <div class="eyebrow">AI Analysis</div>
             ${reportBlockHtml(analysis)}
           </section>
@@ -411,12 +355,161 @@ const openPrintableReport = ({
       </body>
     </html>
   `;
+};
 
-  printableWindow.document.open();
-  printableWindow.document.write(html);
-  printableWindow.document.close();
-  printableWindow.focus();
-  printableWindow.print();
+const createPdfReport = ({
+  ticker,
+  quote,
+  indicators,
+  preferences,
+  analysis,
+}: {
+  ticker: string;
+  quote: Quote;
+  indicators: IndicatorSnapshot;
+  preferences: AnalysisPreferences;
+  analysis: string;
+}) => {
+  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const margin = 42;
+  const contentWidth = pageWidth - margin * 2;
+  let y = margin;
+
+  const ensureSpace = (height: number) => {
+    if (y + height <= pageHeight - margin) return;
+    doc.addPage();
+    y = margin;
+  };
+
+  const addWrapped = (text: string, fontSize = 11, color: [number, number, number] = [51, 65, 85], lineHeight = 18) => {
+    doc.setFontSize(fontSize);
+    doc.setTextColor(...color);
+    const lines = doc.splitTextToSize(text, contentWidth);
+    ensureSpace(lines.length * lineHeight + 8);
+    doc.text(lines, margin, y);
+    y += lines.length * lineHeight;
+  };
+
+  doc.setFillColor(245, 249, 255);
+  doc.rect(0, 0, pageWidth, pageHeight, 'F');
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(margin, y, contentWidth, 160, 22, 22, 'F');
+  doc.setDrawColor(225, 232, 240);
+  doc.roundedRect(margin, y, contentWidth, 160, 22, 22, 'S');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(100, 116, 139);
+  doc.text('INSTITUTIONAL MARKET REPORT', margin + 22, y + 26);
+  doc.setFontSize(24);
+  doc.setTextColor(15, 23, 42);
+  doc.text(String(quote.shortName || quote.longName || ticker), margin + 22, y + 56);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  doc.setTextColor(82, 97, 121);
+  doc.text(
+    `代码 ${ticker}  ·  时间 ${new Date().toLocaleString('zh-CN')}  ·  周期 ${timeframeOptions.find((item) => item.value === preferences.timeframe)?.label || preferences.timeframe}`,
+    margin + 22,
+    y + 78,
+  );
+  doc.setFillColor(240, 253, 250);
+  doc.roundedRect(margin + 22, y + 96, 170, 28, 14, 14, 'F');
+  doc.setTextColor(15, 118, 110);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`信号评分 ${indicators.signalScore}/100 · ${indicators.signalLabel}`, margin + 34, y + 115);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(51, 65, 85);
+  doc.text(`最新价 ${formatNumber(quote.regularMarketPrice)} ${quote.currency || ''}`, margin + 22, y + 142);
+  doc.text(`风险偏好 ${riskOptions.find((item) => item.value === preferences.riskProfile)?.label || preferences.riskProfile}`, margin + 240, y + 142);
+  y += 188;
+
+  const metricLines = [
+    `趋势：${indicators.trend.regime}`,
+    `RSI14：${formatNumber(indicators.momentum.rsi14)}`,
+    `MACD：${formatNumber(indicators.momentum.macd)} / ${formatNumber(indicators.momentum.signal)}`,
+    `ATR14：${formatNumber(indicators.volatility.atr14)}`,
+    `支撑 / 阻力：${formatNumber(indicators.supportResistance.support)} / ${formatNumber(indicators.supportResistance.resistance)}`,
+    `量能：${formatNumber(indicators.volume.relativeVolume)}x`,
+    `自定义关注：${preferences.customFocus || '无'}`,
+  ];
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(15, 23, 42);
+  doc.text('核心指标摘要', margin, y);
+  y += 18;
+  doc.setFont('helvetica', 'normal');
+  metricLines.forEach((line) => {
+    addWrapped(`• ${line}`, 11, [51, 65, 85], 18);
+  });
+  y += 10;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.setTextColor(15, 23, 42);
+  ensureSpace(24);
+  doc.text('详细分析报告', margin, y);
+  y += 22;
+  doc.setFont('helvetica', 'normal');
+
+  analysis.split('\n').forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) {
+      y += 8;
+      return;
+    }
+    if (line.startsWith('## ')) {
+      ensureSpace(28);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(15, 23, 42);
+      doc.text(line.slice(3), margin, y);
+      doc.setFont('helvetica', 'normal');
+      y += 20;
+      return;
+    }
+    if (line.startsWith('### ')) {
+      ensureSpace(24);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(12);
+      doc.setTextColor(30, 41, 59);
+      doc.text(line.slice(4), margin, y);
+      doc.setFont('helvetica', 'normal');
+      y += 18;
+      return;
+    }
+    if (line.startsWith('- ')) {
+      addWrapped(`• ${line.slice(2)}`, 11, [51, 65, 85], 18);
+      return;
+    }
+    addWrapped(line, 11, [51, 65, 85], 18);
+  });
+
+  doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
+};
+
+const openPrintableReport = ({
+  ticker,
+  quote,
+  indicators,
+  preferences,
+  analysis,
+}: {
+  ticker: string;
+  quote: Quote;
+  indicators: IndicatorSnapshot;
+  preferences: AnalysisPreferences;
+  analysis: string;
+}) => {
+  const html = createReportHtml({ ticker, quote, indicators, preferences, analysis });
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `${ticker.toLowerCase()}-analysis-report.html`;
+  link.click();
+  URL.revokeObjectURL(url);
 };
 
 function App() {
@@ -766,9 +859,14 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const exportPrintableReport = () => {
+  const downloadHtmlReport = () => {
     if (!quote || !indicators || !analysis || !ticker) return;
     openPrintableReport({ ticker, quote, indicators, preferences, analysis });
+  };
+
+  const downloadPdfReport = () => {
+    if (!quote || !indicators || !analysis || !ticker) return;
+    createPdfReport({ ticker, quote, indicators, preferences, analysis });
   };
 
   const toggleDimension = (dimension: AnalysisDimension) => {
@@ -1230,11 +1328,11 @@ function App() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      onClick={exportPrintableReport}
+                      onClick={downloadPdfReport}
                       disabled={!analysis}
                       className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      <Printer className="h-4 w-4" />
+                      <Download className="h-4 w-4" />
                       保存 PDF
                     </button>
                     <button
@@ -1245,6 +1343,15 @@ function App() {
                     >
                       <FileText className="h-4 w-4" />
                       Markdown
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadHtmlReport}
+                      disabled={!analysis}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <FileText className="h-4 w-4" />
+                      HTML 报告
                     </button>
                   </div>
                 </div>
