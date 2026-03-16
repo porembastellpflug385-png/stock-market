@@ -1797,7 +1797,16 @@ function App() {
       if (!res.ok) {
         throw new Error(getPayloadError(payload, `生成${scope}报告失败`));
       }
-      const overview = normalizeTrackingOverview(payload as TrackingOverview);
+      const overview =
+        payload?.mode === 'fast'
+          ? normalizeTrackingOverview({
+              ...currentOverview,
+              latestReports: Array.isArray(payload.latestReports) ? payload.latestReports : currentOverview.latestReports,
+              generatedReports: payload.report
+                ? [payload.report, ...(currentOverview.generatedReports || [])].slice(0, 60)
+                : currentOverview.generatedReports,
+            })
+          : normalizeTrackingOverview(payload as TrackingOverview);
       const scannerDigest = buildScannerDigest();
       if (scannerDigest && overview.generatedReports.length > 0) {
         const [latestReport, ...restReports] = overview.generatedReports;

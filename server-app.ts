@@ -1244,6 +1244,13 @@ export function createApp() {
       const providedState = req.body?.state ? normalizeTrackingState(req.body.state) : null;
       const mode = String(req.body?.mode || 'fast') === 'full' ? 'full' : 'fast';
       const state = await runTrackingWorkflow(scope, 'manual', providedState || undefined, mode);
+      if (mode === 'fast') {
+        return res.json({
+          mode,
+          latestReports: state.latestReports,
+          report: state.generatedReports[0] || null,
+        });
+      }
       res.json(state);
     } catch (error: any) {
       console.error("Error running tracking cycle:", error);
