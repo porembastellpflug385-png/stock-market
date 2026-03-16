@@ -1511,6 +1511,9 @@ function App() {
       setScannerResults(Array.isArray(payload.candidates) ? payload.candidates : []);
       setScannerScanned(Number(payload.scanned || 0));
       setScannerRefinements([]);
+      if (payload.requestedScanned && payload.requestedScanned > payload.scanned) {
+        setScannerError(`为避免部署超时，本次线上扫描已从 ${payload.requestedScanned} 只候选中限流执行 ${payload.scanned} 只。`);
+      }
       const activeTemplate = scannerTemplates.find((item) => item.id === scannerTemplateId);
       const nextSnapshots = [
         {
@@ -2172,6 +2175,9 @@ function App() {
             <div className="mt-2 text-xs text-slate-400">
               规则扫描不烧 token，只有“AI 精筛前 24 名”会调用 `gpt-5.4`。
               若默认模型不可用，系统会自动切换到可用的文本模型继续精筛。
+            </div>
+            <div className="mt-2 text-xs text-slate-500">
+              线上部署会自动限制单次扫描池规模，优先保证稳定返回结果，再做 AI 精筛。
             </div>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-3">

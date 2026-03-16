@@ -36,6 +36,8 @@ const API_CONFIG = {
 const TEXT_MODEL = "gpt-5.4";
 const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 const DEFAULT_TEXT_MODEL_FALLBACKS = [TEXT_MODEL, "deepseek-v3.2-exp"];
+const DEFAULT_EXTERNAL_TIMEOUT_MS = 12000;
+const DEFAULT_SCANNER_UNIVERSE_LIMIT = process.env.VERCEL === '1' ? 36 : 80;
 
 const defaultServerProvider = {
   baseUrl: API_CONFIG.baseUrl,
@@ -267,7 +269,8 @@ const summarizeValidationGroup = (items: Array<{ returnPct: number; drawdownPct:
 
 const isTransientLlmError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error || '');
-  return /LLM request failed/i.test(message) && /( 429 )|upstream_error|负载已饱和|model_not_found/i.test(message);
+  return (/LLM request failed/i.test(message) && /( 429 )|upstream_error|负载已饱和|model_not_found/i.test(message))
+    || /超时|timeout/i.test(message);
 };
 
 const isModelRoutingError = (error: unknown) => {
@@ -298,6 +301,20 @@ const buildRuleBasedRefinements = (candidates: any[]) =>
     .sort((left, right) => right.aiScore - left.aiScore);
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) => {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race<T>([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} 超时（>${Math.round(ms / 1000)}s）`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+};
 
 const generateWithThirdParty = async ({
   messages,
@@ -629,10 +646,14 @@ const generateInstitutionalAnalysis = async (
 ) => {
   const prompt = buildPrompt(ticker, bundle, preferences);
   try {
-    const result = await generateWithDefaultProvider({
-      messages: [{ role: 'user', content: prompt }],
-      customConfig: { temperature: 0.3 },
-    });
+    const result = await withTimeout(
+      generateWithDefaultProvider({
+        messages: [{ role: 'user', content: prompt }],
+        customConfig: { temperature: 0.3 },
+      }),
+      DEFAULT_EXTERNAL_TIMEOUT_MS,
+      `${ticker} AI 分析`,
+    );
     return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
   } catch (error) {
     if (isTransientLlmError(error)) {
@@ -834,20 +855,32 @@ export function createApp() {
           : defaultPreferences.dimensions,
       };
 
-      const bundle = await fetchMarketBundle(ticker, preferences.timeframe);
+      const bundle = await withTimeout(
+        fetchMarketBundle(ticker, preferences.timeframe),
+        DEFAULT_EXTERNAL_TIMEOUT_MS,
+        `${ticker} 行情抓取`,
+      );
       const thirdPartyConfig = extractThirdPartyConfig(req);
       const prompt = buildPrompt(ticker, bundle, preferences);
       try {
         const result = thirdPartyConfig
-          ? await generateWithThirdParty({
-              messages: [{ role: 'user', content: prompt }],
-              config: thirdPartyConfig,
-              customConfig: { temperature: 0.3 },
-            })
-          : await generateWithDefaultProvider({
-              messages: [{ role: 'user', content: prompt }],
-              customConfig: { temperature: 0.3 },
-            });
+          ? await withTimeout(
+              generateWithThirdParty({
+                messages: [{ role: 'user', content: prompt }],
+                config: thirdPartyConfig,
+                customConfig: { temperature: 0.3 },
+              }),
+              DEFAULT_EXTERNAL_TIMEOUT_MS,
+              `${ticker} 第三方 AI 分析`,
+            )
+          : await withTimeout(
+              generateWithDefaultProvider({
+                messages: [{ role: 'user', content: prompt }],
+                customConfig: { temperature: 0.3 },
+              }),
+              DEFAULT_EXTERNAL_TIMEOUT_MS,
+              `${ticker} 默认 AI 分析`,
+            );
 
         res.json({
           analysis: result.text || buildFallbackAnalysis(ticker, bundle, preferences),
@@ -914,9 +947,14 @@ export function createApp() {
         ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
       );
 
-      const universe = getScannerUniverse(markets);
-      const results = await runWithConcurrency(universe, 5, async (asset) => {
-        const bundle = await fetchMarketBundle(asset.symbol, '6mo');
+      const requestedUniverse = getScannerUniverse(markets);
+      const universe = requestedUniverse.slice(0, DEFAULT_SCANNER_UNIVERSE_LIMIT);
+      const results = await runWithConcurrency(universe, 6, async (asset) => {
+        const bundle = await withTimeout(
+          fetchMarketBundle(asset.symbol, '6mo'),
+          7000,
+          `${asset.symbol} 扫描行情`,
+        );
         return evaluateScannerTemplate(templateId, asset, bundle.packet, {
           regularMarketPrice: bundle.quote.regularMarketPrice,
           regularMarketChangePercent: bundle.quote.regularMarketChangePercent,
@@ -932,6 +970,7 @@ export function createApp() {
         template: scannerTemplates.find((item) => item.id === templateId) || scannerTemplates[3],
         markets: markets.length ? markets : ['US', 'CN', 'HK', 'ETF', 'CRYPTO'],
         scanned: universe.length,
+        requestedScanned: requestedUniverse.length,
         candidates,
       });
     } catch (error: any) {
