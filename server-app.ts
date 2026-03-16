@@ -29,22 +29,30 @@ import {
 const yahooFinance = new YahooFinance();
 
 const API_CONFIG = {
-  key: "sk-12a7BPJym4RJSfqoVq5EHEEAs4ohQjIAZOA8QWVMNmFA0Fru",
-  baseUrl: "https://ai.scd666.com/v1/chat/completions",
+  key: process.env.OPENAI_API_KEY || '',
+  baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
 };
 
-const TEXT_MODEL = "gpt-5.4";
-const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
-const VERIFIED_TEXT_MODEL = "deepseek-v3.2-exp";
-const DEFAULT_TEXT_MODEL_FALLBACKS = [VERIFIED_TEXT_MODEL, TEXT_MODEL];
-const DEFAULT_EXTERNAL_TIMEOUT_MS = 12000;
-const DEFAULT_SCANNER_UNIVERSE_LIMIT = process.env.VERCEL === '1' ? 18 : 60;
+const TEXT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
+const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-4o';
+const VERIFIED_TEXT_MODEL = process.env.VERIFIED_TEXT_MODEL || TEXT_MODEL;
+const DEFAULT_TEXT_MODEL_FALLBACKS = Array.from(
+  new Set([VERIFIED_TEXT_MODEL, TEXT_MODEL].filter(Boolean)),
+);
+const DEFAULT_EXTERNAL_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 50000;
+const DEFAULT_SCANNER_UNIVERSE_LIMIT = Number(process.env.SCANNER_UNIVERSE_LIMIT) || (process.env.VERCEL === '1' ? 35 : 60);
 
 const defaultServerProvider = {
   baseUrl: API_CONFIG.baseUrl,
   apiKey: API_CONFIG.key,
   model: TEXT_MODEL,
 };
+
+if (!API_CONFIG.key) {
+  console.warn(
+    '⚠️  OPENAI_API_KEY 未设置，所有 AI 分析功能将不可用。请在 .env 或环境变量中配置。',
+  );
+}
 
 type FallbackQuote = {
   symbol: string;
@@ -235,21 +243,37 @@ const summarizeNonJsonResponse = (text: string) => {
 
 const tryParseJsonFragment = (text: string) => {
   const trimmed = text.trim();
+
+  // 1. 直接尝试解析
   try {
     return JSON.parse(trimmed);
-  } catch {
-    const arrayStart = trimmed.indexOf('[');
-    const arrayEnd = trimmed.lastIndexOf(']');
-    if (arrayStart !== -1 && arrayEnd > arrayStart) {
-      return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
-    }
-    const objectStart = trimmed.indexOf('{');
-    const objectEnd = trimmed.lastIndexOf('}');
-    if (objectStart !== -1 && objectEnd > objectStart) {
-      return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
-    }
-    throw new Error('Failed to parse JSON fragment from model output');
+  } catch { /* continue */ }
+
+  // 2. 尝试从 ```json ... ``` 代码块中提取
+  const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?\s*```/);
+  if (codeBlockMatch) {
+    try {
+      return JSON.parse(codeBlockMatch[1].trim());
+    } catch { /* continue */ }
   }
+
+  // 3. 查找最外层的 [...] 或 {...}
+  const arrayStart = trimmed.indexOf('[');
+  const arrayEnd = trimmed.lastIndexOf(']');
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    try {
+      return JSON.parse(trimmed.slice(arrayStart, arrayEnd + 1));
+    } catch { /* continue */ }
+  }
+  const objectStart = trimmed.indexOf('{');
+  const objectEnd = trimmed.lastIndexOf('}');
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    try {
+      return JSON.parse(trimmed.slice(objectStart, objectEnd + 1));
+    } catch { /* continue */ }
+  }
+
+  throw new Error(`Failed to parse JSON fragment from model output. Preview: ${trimmed.slice(0, 200)}`);
 };
 
 const summarizeValidationGroup = (items: Array<{ returnPct: number; drawdownPct: number }>) => {
@@ -274,9 +298,9 @@ const isTransientLlmError = (error: unknown) => {
     || /超时|timeout/i.test(message);
 };
 
-const isModelRoutingError = (error: unknown) => {
+const isRetryableOrRoutingError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error || '');
-  return /model_not_found|upstream_error|负载已饱和|does not exist|unsupported/i.test(message);
+  return /model_not_found|upstream_error|负载已饱和|does not exist|unsupported|429|超时|timeout/i.test(message);
 };
 
 const buildRuleBasedRefinements = (candidates: any[]) =>
@@ -362,9 +386,11 @@ const generateWithThirdParty = async ({
       const modelUnavailable = /model_not_found|does not exist|unsupported/i.test(responseText);
       const retryable =
         !modelUnavailable &&
-        (response.status === 429 || /upstream_error|负载已饱和/i.test(responseText));
+        (response.status === 429 || response.status >= 500 || /upstream_error|负载已饱和/i.test(responseText));
       if (retryable && attempt < 3) {
-        await sleep(500 * attempt);
+        const delayMs = 1500 * attempt;
+        console.warn(`LLM 请求失败 (${response.status})，${delayMs}ms 后重试 (attempt ${attempt}/3)`);
+        await sleep(delayMs);
         continue;
       }
       throw error;
@@ -398,6 +424,10 @@ const generateWithDefaultProvider = async ({
   messages: ThirdPartyMessage[];
   customConfig?: Record<string, unknown>;
 }) => {
+  if (!defaultServerProvider.apiKey) {
+    throw new Error('OPENAI_API_KEY 未配置，无法调用 AI 服务。请在环境变量中设置 OPENAI_API_KEY。');
+  }
+
   let lastError: unknown = null;
   const models = Array.from(new Set(DEFAULT_TEXT_MODEL_FALLBACKS.filter(Boolean)));
 
@@ -417,8 +447,8 @@ const generateWithDefaultProvider = async ({
       };
     } catch (error) {
       lastError = error;
-      if (model !== models[models.length - 1] && isModelRoutingError(error)) {
-        console.warn(`Model ${model} unavailable on default gateway, retrying with fallback model.`);
+      if (model !== models[models.length - 1] && isRetryableOrRoutingError(error)) {
+        console.warn(`Model ${model} failed (${error instanceof Error ? error.message.slice(0, 120) : 'unknown'}), trying next fallback model.`);
         continue;
       }
       throw error;
@@ -493,7 +523,7 @@ const fetchEastmoneyBundle = async (ticker: string) => {
     regularMarketDayLow: eastmoneyPrice(quoteData.f45),
     regularMarketVolume: safeNumber(quoteData.f47),
     marketCap: safeNumber(quoteData.f116),
-    trailingPE: eastmoneyPrice(quoteData.f164),
+    trailingPE: safeNumber(quoteData.f164),  // PE 不需要除以 100
     exchange: ticker.toUpperCase().endsWith('.SS') ? 'SSE' : 'SZSE',
   };
 
@@ -593,54 +623,68 @@ const buildFallbackAnalysis = (ticker: string, bundle: AnalysisBundleLike, prefe
   ].join('\n');
 };
 
-const buildPrompt = (ticker: string, bundle: AnalysisBundleLike, preferences: AnalysisPreferences) => {
+const SYSTEM_PROMPT_ANALYSIS = `你是一名机构级多资产研究主管。请用专业、克制、可执行的中文输出 Markdown 分析报告。
+要求：
+- 避免空泛判断，必须引用输入数据得出结论。
+- 给出明确的操作方向和关键价位。
+- 结论之间需要有逻辑链条，而非简单罗列指标。`;
+
+const buildPromptMessages = (ticker: string, bundle: AnalysisBundleLike, preferences: AnalysisPreferences): ThirdPartyMessage[] => {
   const { quote, packet } = bundle;
   const { snapshot, series } = packet;
   const recentSeries = series.slice(-20);
   const selectedDimensions = preferences.dimensions.join('、');
 
-  return `
-你是一名机构级多资产研究主管，请用专业、克制、可执行的中文输出 Markdown 分析报告。
+  const userContent = [
+    `针对 ${ticker} 生成一份"实时盘面 + 量化 + 风险控制"专业分析。`,
+    '',
+    '用户偏好：',
+    `- 分析周期：${preferences.timeframe}`,
+    `- 风险偏好：${preferences.riskProfile}`,
+    `- 重点维度：${selectedDimensions}`,
+    `- 自定义关注点：${preferences.customFocus || '无'}`,
+    '',
+    '实时行情：',
+    `- 名称：${quote.shortName || quote.longName || ticker}`,
+    `- 最新价：${quote.regularMarketPrice} ${quote.currency || ''}`,
+    `- 当日涨跌幅：${quote.regularMarketChangePercent?.toFixed(2) || 'N/A'}%`,
+    `- 当日高低：${quote.regularMarketDayHigh || 'N/A'} / ${quote.regularMarketDayLow || 'N/A'}`,
+    `- 成交量：${quote.regularMarketVolume || 'N/A'}`,
+    `- 市值：${quote.marketCap || 'N/A'}`,
+    `- PE：${quote.trailingPE || 'N/A'}`,
+    `- 52周区间：${quote.fiftyTwoWeekLow || 'N/A'} - ${quote.fiftyTwoWeekHigh || 'N/A'}`,
+    '',
+    '量化快照：',
+    `- 综合信号评分：${snapshot.signalScore}/100（${snapshot.signalLabel}）`,
+    `- 趋势：${snapshot.trend.regime}，SMA20=${snapshot.trend.sma20 ?? 'N/A'}，EMA20=${snapshot.trend.ema20 ?? 'N/A'}，EMA50=${snapshot.trend.ema50 ?? 'N/A'}`,
+    `- 动量：RSI14=${snapshot.momentum.rsi14 ?? 'N/A'}，MACD=${snapshot.momentum.macd ?? 'N/A'}，Signal=${snapshot.momentum.signal ?? 'N/A'}，Histogram=${snapshot.momentum.histogram ?? 'N/A'}`,
+    `- 波动：ATR14=${snapshot.volatility.atr14 ?? 'N/A'}，年化波动率=${snapshot.volatility.annualizedVolatility ?? 'N/A'}%`,
+    `- 量能：最新成交量=${snapshot.volume.latest}，20日均量=${snapshot.volume.average20 ?? 'N/A'}，相对量能=${snapshot.volume.relativeVolume ?? 'N/A'}`,
+    `- 支撑阻力：支撑=${snapshot.supportResistance.support ?? 'N/A'}，阻力=${snapshot.supportResistance.resistance ?? 'N/A'}`,
+    `- 布林带：上轨=${snapshot.bollinger.upper ?? 'N/A'}，中轨=${snapshot.bollinger.middle ?? 'N/A'}，下轨=${snapshot.bollinger.lower ?? 'N/A'}，位置=${snapshot.bollinger.positionLabel}`,
+    `- 收益表现：5日=${snapshot.returns.week ?? 'N/A'}%，21日=${snapshot.returns.month ?? 'N/A'}%，63日=${snapshot.returns.quarter ?? 'N/A'}%`,
+    '',
+    '最近20个交易日数据（日期 | 收盘 | RSI | MACD柱线 | 成交量）：',
+    ...recentSeries.map((item) => `${item.date} | ${item.close} | ${item.rsi14 ?? 'N/A'} | ${item.macdHistogram ?? 'N/A'} | ${item.volume}`),
+    '',
+    '请严格按下面结构输出：',
+    '1. 市场结论摘要',
+    '2. 技术指标拆解',
+    '3. 量化执行框架',
+    '4. 风险点与反证条件',
+    '5. 操作建议',
+  ].join('\n');
 
-任务目标：
-针对 ${ticker} 生成一份“实时盘面 + 量化 + 风险控制”专业分析，避免空泛判断，必须引用输入数据得出结论。
+  return [
+    { role: 'system' as const, content: SYSTEM_PROMPT_ANALYSIS },
+    { role: 'user' as const, content: userContent },
+  ];
+};
 
-用户偏好：
-- 分析周期：${preferences.timeframe}
-- 风险偏好：${preferences.riskProfile}
-- 重点维度：${selectedDimensions}
-- 自定义关注点：${preferences.customFocus || '无'}
-
-实时行情：
-- 名称：${quote.shortName || quote.longName || ticker}
-- 最新价：${quote.regularMarketPrice} ${quote.currency || ''}
-- 当日涨跌幅：${quote.regularMarketChangePercent?.toFixed(2) || 'N/A'}%
-- 当日高低：${quote.regularMarketDayHigh || 'N/A'} / ${quote.regularMarketDayLow || 'N/A'}
-- 成交量：${quote.regularMarketVolume || 'N/A'}
-- 市值：${quote.marketCap || 'N/A'}
-- PE：${quote.trailingPE || 'N/A'}
-- 52周区间：${quote.fiftyTwoWeekLow || 'N/A'} - ${quote.fiftyTwoWeekHigh || 'N/A'}
-
-量化快照：
-- 综合信号评分：${snapshot.signalScore}/100（${snapshot.signalLabel}）
-- 趋势：${snapshot.trend.regime}，SMA20=${snapshot.trend.sma20 ?? 'N/A'}，EMA20=${snapshot.trend.ema20 ?? 'N/A'}，EMA50=${snapshot.trend.ema50 ?? 'N/A'}
-- 动量：RSI14=${snapshot.momentum.rsi14 ?? 'N/A'}，MACD=${snapshot.momentum.macd ?? 'N/A'}，Signal=${snapshot.momentum.signal ?? 'N/A'}，Histogram=${snapshot.momentum.histogram ?? 'N/A'}
-- 波动：ATR14=${snapshot.volatility.atr14 ?? 'N/A'}，年化波动率=${snapshot.volatility.annualizedVolatility ?? 'N/A'}%
-- 量能：最新成交量=${snapshot.volume.latest}，20日均量=${snapshot.volume.average20 ?? 'N/A'}，相对量能=${snapshot.volume.relativeVolume ?? 'N/A'}
-- 支撑阻力：支撑=${snapshot.supportResistance.support ?? 'N/A'}，阻力=${snapshot.supportResistance.resistance ?? 'N/A'}
-- 布林带：上轨=${snapshot.bollinger.upper ?? 'N/A'}，中轨=${snapshot.bollinger.middle ?? 'N/A'}，下轨=${snapshot.bollinger.lower ?? 'N/A'}，位置=${snapshot.bollinger.positionLabel}
-- 收益表现：5日=${snapshot.returns.week ?? 'N/A'}%，21日=${snapshot.returns.month ?? 'N/A'}%，63日=${snapshot.returns.quarter ?? 'N/A'}%
-
-最近20个交易日数据（日期 | 收盘 | RSI | MACD柱线 | 成交量）：
-${recentSeries.map((item) => `${item.date} | ${item.close} | ${item.rsi14 ?? 'N/A'} | ${item.macdHistogram ?? 'N/A'} | ${item.volume}`).join('\n')}
-
-请严格按下面结构输出：
-1. 市场结论摘要
-2. 技术指标拆解
-3. 量化执行框架
-4. 风险点与反证条件
-5. 操作建议
-`.trim();
+/** @deprecated 保留向后兼容，内部调用 buildPromptMessages 拼接 */
+const buildPrompt = (ticker: string, bundle: AnalysisBundleLike, preferences: AnalysisPreferences) => {
+  const msgs = buildPromptMessages(ticker, bundle, preferences);
+  return msgs.map((m) => m.content).join('\n\n');
 };
 
 const generateInstitutionalAnalysis = async (
@@ -648,25 +692,21 @@ const generateInstitutionalAnalysis = async (
   bundle: AnalysisBundleLike,
   preferences: AnalysisPreferences,
 ) => {
-  const prompt = buildPrompt(ticker, bundle, preferences);
-  try {
-    const result = await withTimeout(
-      generateWithDefaultProvider({
-        messages: [{ role: 'user', content: prompt }],
-        customConfig: { temperature: 0.3 },
-      }),
-      DEFAULT_EXTERNAL_TIMEOUT_MS,
-      `${ticker} AI 分析`,
-    );
-    return result.text || buildFallbackAnalysis(ticker, bundle, preferences);
-  } catch (error) {
-    if (isTransientLlmError(error)) {
-      console.warn(`LLM temporarily unavailable for ${ticker}, falling back to rules analysis.`);
-      return buildFallbackAnalysis(ticker, bundle, preferences);
-    }
-    throw error;
+  const messages = buildPromptMessages(ticker, bundle, preferences);
+  const result = await withTimeout(
+    generateWithDefaultProvider({
+      messages,
+      customConfig: { temperature: 0.3, max_tokens: 4096 },
+    }),
+    DEFAULT_EXTERNAL_TIMEOUT_MS,
+    `${ticker} AI 分析`,
+  );
+  if (!result.text) {
+    throw new Error(`${ticker} AI 分析返回空内容（模型: ${result.modelUsed}）`);
   }
+  return result.text;
 };
+
 
 const runTrackingWorkflow = async (
   scope: ReportScope,
@@ -713,7 +753,24 @@ const runTrackingWorkflow = async (
       if (!prioritizedSet.has(symbol)) {
         return buildFallbackAnalysis(symbol, bundle, preferences);
       }
-      return generateInstitutionalAnalysis(symbol, bundle, preferences);
+      // 优先使用 AI，失败后重试一次，仍失败则抛出错误（不静默降级）
+      try {
+        return await generateInstitutionalAnalysis(symbol, bundle, preferences);
+      } catch (firstError) {
+        console.warn(`${symbol} AI 分析首次失败，2s 后重试...`, firstError instanceof Error ? firstError.message : firstError);
+        await sleep(2000);
+        try {
+          return await generateInstitutionalAnalysis(symbol, bundle, preferences);
+        } catch (retryError) {
+          console.error(`${symbol} AI 分析重试仍失败，使用规则分析作为临时替代`, retryError instanceof Error ? retryError.message : retryError);
+          // 仅在两次都失败后才用规则分析，并在文本中明确标注
+          return [
+            `> ⚠️ 注意：${symbol} 的 AI 分析连续两次请求失败，以下为基于技术指标的规则化分析，非大模型生成。`,
+            '',
+            buildFallbackAnalysis(symbol, bundle, preferences),
+          ].join('\n');
+        }
+      }
     },
   });
 };
@@ -865,38 +922,45 @@ export function createApp() {
         `${ticker} 行情抓取`,
       );
       const thirdPartyConfig = extractThirdPartyConfig(req);
-      const prompt = buildPrompt(ticker, bundle, preferences);
+      const messages = buildPromptMessages(ticker, bundle, preferences);
       try {
         const result = thirdPartyConfig
           ? await withTimeout(
               generateWithThirdParty({
-                messages: [{ role: 'user', content: prompt }],
+                messages,
                 config: thirdPartyConfig,
-                customConfig: { temperature: 0.3 },
+                customConfig: { temperature: 0.3, max_tokens: 4096 },
               }),
               DEFAULT_EXTERNAL_TIMEOUT_MS,
               `${ticker} 第三方 AI 分析`,
             )
           : await withTimeout(
               generateWithDefaultProvider({
-                messages: [{ role: 'user', content: prompt }],
-                customConfig: { temperature: 0.3 },
+                messages,
+                customConfig: { temperature: 0.3, max_tokens: 4096 },
               }),
               DEFAULT_EXTERNAL_TIMEOUT_MS,
               `${ticker} 默认 AI 分析`,
             );
 
+        if (!result.text) {
+          throw new Error(`AI 返回空内容`);
+        }
+
         res.json({
-          analysis: result.text || buildFallbackAnalysis(ticker, bundle, preferences),
+          analysis: result.text,
           source: thirdPartyConfig ? 'third-party' : 'openai',
           modelUsed: 'modelUsed' in result ? result.modelUsed : (thirdPartyConfig?.model || defaultServerProvider.model),
         });
       } catch (error) {
         if (isTransientLlmError(error)) {
-          return res.json({
-            analysis: buildFallbackAnalysis(ticker, bundle, preferences),
-            source: 'rules',
-            degraded: true,
+          const errMsg = error instanceof Error ? error.message : String(error);
+          console.warn(`AI 分析失败 (${ticker}): ${errMsg}`);
+          return res.status(503).json({
+            error: `AI 服务暂时不可用：${errMsg}`,
+            retryable: true,
+            fallbackAnalysis: buildFallbackAnalysis(ticker, bundle, preferences),
+            source: 'rules-fallback',
           });
         }
         throw error;
@@ -953,10 +1017,10 @@ export function createApp() {
 
       const requestedUniverse = getScannerUniverse(markets);
       const universe = requestedUniverse.slice(0, DEFAULT_SCANNER_UNIVERSE_LIMIT);
-      const results = await runWithConcurrency(universe, 6, async (asset) => {
+      const results = await runWithConcurrency(universe, 4, async (asset) => {
         const bundle = await withTimeout(
           fetchMarketBundle(asset.symbol, '6mo'),
-          7000,
+          10000,
           `${asset.symbol} 扫描行情`,
         );
         return evaluateScannerTemplate(templateId, asset, bundle.packet, {
@@ -991,9 +1055,9 @@ export function createApp() {
       }
 
       const topN = Math.max(1, Math.min(10, Number(req.body?.topN || 6)));
-      const prompt = [
-        '你是一名机构级投资研究主管，请对下面规则扫描选出的候选标的做二次精筛。',
-        '请只输出 JSON 数组，不要输出 Markdown、解释或代码块。',
+      const systemMsg = '你是一名机构级投资研究主管。请只输出 JSON 数组，不要输出 Markdown、解释或代码块。';
+      const userMsg = [
+        '请对下面规则扫描选出的候选标的做二次精筛。',
         '每个对象必须包含字段：symbol, aiScore, conviction, recommendation, shouldPromote, summary, risks。',
         '字段要求：',
         '- aiScore: 0-100 的整数',
@@ -1010,10 +1074,13 @@ export function createApp() {
       try {
         const result = await withTimeout(
           generateWithDefaultProvider({
-            messages: [{ role: 'user', content: prompt }],
-            customConfig: { temperature: 0.2 },
+            messages: [
+              { role: 'system', content: systemMsg },
+              { role: 'user', content: userMsg },
+            ],
+            customConfig: { temperature: 0.2, max_tokens: 4096 },
           }),
-          10000,
+          DEFAULT_EXTERNAL_TIMEOUT_MS,
           '扫描 AI 精筛',
         );
 
@@ -1044,11 +1111,14 @@ export function createApp() {
         });
       } catch (error) {
         if (isTransientLlmError(error)) {
-          return res.json({
-            refined: buildRuleBasedRefinements(candidates),
+          const errMsg = error instanceof Error ? error.message : String(error);
+          console.warn(`AI 精筛失败: ${errMsg}`);
+          return res.status(503).json({
+            error: `AI 精筛服务暂时不可用：${errMsg}`,
+            retryable: true,
+            fallbackRefined: buildRuleBasedRefinements(candidates),
             topN,
             model: 'rules-fallback',
-            degraded: true,
           });
         }
         throw error;

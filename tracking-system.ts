@@ -613,11 +613,15 @@ export const runTrackingCycle = async ({
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
-  const settledReports = await runWithConcurrency(state.watchlist, 3, async (asset) => {
-    const bundle = await withTimeout(fetchAsset(asset.symbol), 12000, `${asset.symbol} 行情抓取`);
+  const fetchTimeoutMs = Number(process.env.TRACKING_FETCH_TIMEOUT_MS) || 25000;
+  const analysisTimeoutMs = Number(process.env.TRACKING_ANALYSIS_TIMEOUT_MS) || 55000;
+  const concurrency = Number(process.env.TRACKING_CONCURRENCY) || 2;
+
+  const settledReports = await runWithConcurrency(state.watchlist, concurrency, async (asset) => {
+    const bundle = await withTimeout(fetchAsset(asset.symbol), fetchTimeoutMs, `${asset.symbol} 行情抓取`);
     const analysis = await withTimeout(
       generateAnalysis(asset.symbol, bundle),
-      12000,
+      analysisTimeoutMs,
       `${asset.symbol} 分析生成`,
     );
     const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
@@ -654,7 +658,7 @@ export const runTrackingCycle = async ({
 
   if (nextReports.length === 0) {
     const details = failedSymbols.slice(0, 5).map((item) => `${item.symbol}: ${item.error}`).join('；');
-    throw new Error(details ? `本次日报生成失败，全部标的处理异常。${details}` : '本次日报生成失败，未能处理任何标的。');
+    throw new Error(details ? `本次${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}生成失败，全部标的处理异常。${details}` : `本次${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}生成失败，未能处理任何标的。请检查 API Key 配置和网络连接。`);
   }
 
   state.latestReports = nextReports;
