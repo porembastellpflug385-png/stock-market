@@ -362,6 +362,9 @@ const trackingStrategies = [
   },
 ] as const;
 const trackingAiMaxAssets = 6;
+const scannerRunLimit = 24;
+const scannerRefineLimit = 12;
+const scannerHighQualityLimit = 6;
 const scannerMarketOptions: Array<{ value: ScannerMarket; label: string }> = [
   { value: 'US', label: '美股' },
   { value: 'CN', label: 'A股' },
@@ -1501,7 +1504,7 @@ function App() {
         body: JSON.stringify({
           templateId: scannerTemplateId,
           markets: scannerMarkets,
-          limit: 40,
+          limit: scannerRunLimit,
         }),
       });
       const payload = await readApiPayload(res);
@@ -1546,7 +1549,7 @@ function App() {
     setScannerRefineLoading(true);
     setScannerError(null);
     try {
-      const candidates = scannerResults.slice(0, 24).map((item) => ({
+      const candidates = scannerResults.slice(0, scannerRefineLimit).map((item) => ({
         symbol: item.symbol,
         name: item.name,
         market: item.market,
@@ -1562,7 +1565,7 @@ function App() {
       const res = await fetch('/api/scanner/refine', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ candidates, topN: 8 }),
+        body: JSON.stringify({ candidates, topN: scannerHighQualityLimit }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
@@ -2167,13 +2170,13 @@ function App() {
               disabled={scannerRefineLoading || scannerResults.length === 0}
               className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {scannerRefineLoading ? 'AI 精筛中...' : 'AI 精筛前 24 名'}
+              {scannerRefineLoading ? 'AI 精筛中...' : `AI 精筛前 ${scannerRefineLimit} 名`}
             </button>
           </div>
           <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">
             当前规则层返回前 40 名候选；AI 只看前 24 名，再压缩出前 8 个更值得你直接处理的标的。
             <div className="mt-2 text-xs text-slate-400">
-              规则扫描不烧 token，只有“AI 精筛前 24 名”会调用 `gpt-5.4`。
+              规则扫描不烧 token，只有“AI 精筛前 ${scannerRefineLimit} 名”会调用文本模型。
               若默认模型不可用，系统会自动切换到可用的文本模型继续精筛。
             </div>
             <div className="mt-2 text-xs text-slate-500">
@@ -2184,12 +2187,12 @@ function App() {
             <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
               <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">规则层</div>
               <div className="mt-2 text-2xl font-black text-slate-50">{scannerResults.length}</div>
-              <div className="text-xs text-slate-400">候选展示上限 40 只</div>
+              <div className="text-xs text-slate-400">候选展示上限 {scannerRunLimit} 只</div>
             </div>
             <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
               <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">AI 层</div>
               <div className="mt-2 text-2xl font-black text-slate-50">{scannerRefinements.length}</div>
-              <div className="text-xs text-slate-400">候选前 24 名进入 AI 复核</div>
+              <div className="text-xs text-slate-400">候选前 {scannerRefineLimit} 名进入 AI 复核</div>
             </div>
             <div className="rounded-2xl border border-white/8 bg-white/5 p-4">
               <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">最终输出</div>

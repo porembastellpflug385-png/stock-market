@@ -35,9 +35,10 @@ const API_CONFIG = {
 
 const TEXT_MODEL = "gpt-5.4";
 const IMAGE_MODEL = "gemini-3.1-flash-image-preview";
-const DEFAULT_TEXT_MODEL_FALLBACKS = [TEXT_MODEL, "deepseek-v3.2-exp"];
+const VERIFIED_TEXT_MODEL = "deepseek-v3.2-exp";
+const DEFAULT_TEXT_MODEL_FALLBACKS = [VERIFIED_TEXT_MODEL, TEXT_MODEL];
 const DEFAULT_EXTERNAL_TIMEOUT_MS = 12000;
-const DEFAULT_SCANNER_UNIVERSE_LIMIT = process.env.VERCEL === '1' ? 36 : 80;
+const DEFAULT_SCANNER_UNIVERSE_LIMIT = process.env.VERCEL === '1' ? 18 : 60;
 
 const defaultServerProvider = {
   baseUrl: API_CONFIG.baseUrl,
@@ -358,7 +359,10 @@ const generateWithThirdParty = async ({
       const error = new Error(`LLM request failed at ${requestUrl}: ${response.status} ${responseText.slice(0, 240)}`) as Error & { debug?: ThirdPartyDebug };
       error.debug = debug;
       lastError = error;
-      const retryable = response.status === 429 || /upstream_error|负载已饱和/i.test(responseText);
+      const modelUnavailable = /model_not_found|does not exist|unsupported/i.test(responseText);
+      const retryable =
+        !modelUnavailable &&
+        (response.status === 429 || /upstream_error|负载已饱和/i.test(responseText));
       if (retryable && attempt < 3) {
         await sleep(500 * attempt);
         continue;
@@ -981,7 +985,7 @@ export function createApp() {
 
   app.post("/api/scanner/refine", async (req, res) => {
     try {
-      const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, 20) : [];
+      const candidates = Array.isArray(req.body?.candidates) ? req.body.candidates.slice(0, process.env.VERCEL === '1' ? 12 : 20) : [];
       if (candidates.length === 0) {
         return res.status(400).json({ error: "Candidates are required" });
       }
@@ -1004,10 +1008,14 @@ export function createApp() {
       ].join('\n');
 
       try {
-        const result = await generateWithDefaultProvider({
-          messages: [{ role: 'user', content: prompt }],
-          customConfig: { temperature: 0.2 },
-        });
+        const result = await withTimeout(
+          generateWithDefaultProvider({
+            messages: [{ role: 'user', content: prompt }],
+            customConfig: { temperature: 0.2 },
+          }),
+          10000,
+          '扫描 AI 精筛',
+        );
 
         const parsed = tryParseJsonFragment(result.text);
         if (!Array.isArray(parsed)) {
