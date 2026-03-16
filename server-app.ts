@@ -33,6 +33,13 @@ const API_CONFIG = {
   baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
 };
 
+/** 'chat-completions' = /v1/chat/completions（默认）；'responses' = /v1/responses */
+type ApiEndpointMode = 'chat-completions' | 'responses';
+const API_ENDPOINT_MODE: ApiEndpointMode =
+  (process.env.OPENAI_API_ENDPOINT || '').toLowerCase().includes('response')
+    ? 'responses'
+    : 'chat-completions';
+
 const TEXT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-4o';
 const VERIFIED_TEXT_MODEL = process.env.VERIFIED_TEXT_MODEL || TEXT_MODEL;
@@ -53,6 +60,7 @@ if (!API_CONFIG.key) {
     '⚠️  OPENAI_API_KEY 未设置，所有 AI 分析功能将不可用。请在 .env 或环境变量中配置。',
   );
 }
+console.log(`🔧 LLM endpoint mode: ${API_ENDPOINT_MODE}, model: ${TEXT_MODEL}, fallback: ${VERIFIED_TEXT_MODEL}, timeout: ${DEFAULT_EXTERNAL_TIMEOUT_MS}ms`);
 
 type FallbackQuote = {
   symbol: string;
@@ -192,12 +200,23 @@ const mapQuoteToSearchResult = (quote: any) => ({
   exchange: quote.fullExchangeName || quote.exchange,
 });
 
-const normalizeChatCompletionsUrl = (baseUrl: string) => {
+const normalizeApiUrl = (baseUrl: string, mode: ApiEndpointMode = API_ENDPOINT_MODE) => {
   const sanitized = baseUrl.trim().replace(/\/+$/, '');
+  if (mode === 'responses') {
+    if (sanitized.endsWith('/responses')) return sanitized;
+    if (sanitized.endsWith('/chat/completions')) return sanitized.replace('/chat/completions', '/responses');
+    if (sanitized.endsWith('/v1')) return `${sanitized}/responses`;
+    return `${sanitized}/v1/responses`;
+  }
+  // chat-completions mode
   if (sanitized.endsWith('/chat/completions')) return sanitized;
+  if (sanitized.endsWith('/responses')) return sanitized.replace('/responses', '/chat/completions');
   if (sanitized.endsWith('/v1')) return `${sanitized}/chat/completions`;
   return `${sanitized}/v1/chat/completions`;
 };
+
+/** 向后兼容别名 */
+const normalizeChatCompletionsUrl = (baseUrl: string) => normalizeApiUrl(baseUrl);
 
 const extractThirdPartyConfig = (req: express.Request): ThirdPartyLLMConfig | null => {
   const bodyConfig = req.body?.providerConfig || {};
@@ -217,6 +236,10 @@ const extractThirdPartyConfig = (req: express.Request): ThirdPartyLLMConfig | nu
   return { baseUrl, apiKey, model };
 };
 
+/**
+ * 从 Chat Completions 响应中提取文本
+ * 格式：{ choices: [{ message: { content: "..." } }] }
+ */
 const getTextFromChatResponse = (payload: any) => {
   const content = payload?.choices?.[0]?.message?.content;
   if (typeof content === 'string') return content;
@@ -231,6 +254,42 @@ const getTextFromChatResponse = (payload: any) => {
       .trim();
   }
   return '';
+};
+
+/**
+ * 从 Responses API 响应中提取文本
+ * 格式：{ output: [{ type: "message", content: [{ type: "output_text", text: "..." }] }] }
+ * 或简化：{ output_text: "..." }
+ */
+const getTextFromResponsesApi = (payload: any) => {
+  // 快捷路径：output_text 顶层字段
+  if (typeof payload?.output_text === 'string' && payload.output_text) {
+    return payload.output_text;
+  }
+  // 完整路径：遍历 output 数组
+  if (Array.isArray(payload?.output)) {
+    const texts: string[] = [];
+    for (const item of payload.output) {
+      if (item?.type === 'message' && Array.isArray(item?.content)) {
+        for (const block of item.content) {
+          if (block?.type === 'output_text' && typeof block?.text === 'string') {
+            texts.push(block.text);
+          }
+        }
+      }
+    }
+    if (texts.length > 0) return texts.join('').trim();
+  }
+  return '';
+};
+
+/** 自动根据当前 API 模式提取文本 */
+const getTextFromLlmResponse = (payload: any, mode: ApiEndpointMode = API_ENDPOINT_MODE) => {
+  if (mode === 'responses') {
+    // 先尝试 responses 格式，fallback 到 chat 格式（某些代理可能混用）
+    return getTextFromResponsesApi(payload) || getTextFromChatResponse(payload);
+  }
+  return getTextFromChatResponse(payload) || getTextFromResponsesApi(payload);
 };
 
 const summarizeNonJsonResponse = (text: string) => {
@@ -341,21 +400,58 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) =>
   }
 };
 
+const buildRequestBody = (
+  model: string,
+  messages: ThirdPartyMessage[],
+  customConfig?: Record<string, unknown>,
+  mode: ApiEndpointMode = API_ENDPOINT_MODE,
+) => {
+  const { temperature, max_tokens, ...rest } = (customConfig || {}) as Record<string, unknown>;
+
+  if (mode === 'responses') {
+    // Responses API: 用 input 代替 messages
+    // system 消息转为 instructions 参数
+    const systemMsg = messages.find((m) => m.role === 'system');
+    const nonSystemMsgs = messages.filter((m) => m.role !== 'system');
+
+    // input 可以是字符串（单条 user 消息）或数组
+    const input = nonSystemMsgs.length === 1 && nonSystemMsgs[0].role === 'user'
+      ? nonSystemMsgs[0].content
+      : nonSystemMsgs.map((m) => ({ role: m.role, content: m.content }));
+
+    return {
+      model,
+      input,
+      ...(systemMsg ? { instructions: systemMsg.content } : {}),
+      ...(temperature != null ? { temperature } : {}),
+      ...(max_tokens != null ? { max_output_tokens: max_tokens } : {}),
+      ...rest,
+    };
+  }
+
+  // Chat Completions
+  return {
+    model,
+    messages,
+    ...(temperature != null ? { temperature } : {}),
+    ...(max_tokens != null ? { max_tokens } : {}),
+    ...rest,
+  };
+};
+
 const generateWithThirdParty = async ({
   messages,
   config,
   customConfig,
+  mode = API_ENDPOINT_MODE,
 }: {
   messages: ThirdPartyMessage[];
   config: ThirdPartyLLMConfig;
   customConfig?: Record<string, unknown>;
+  mode?: ApiEndpointMode;
 }) => {
-  const requestUrl = normalizeChatCompletionsUrl(config.baseUrl);
-  const requestBody = {
-    model: config.model,
-    messages,
-    ...(customConfig || {}),
-  };
+  const requestUrl = normalizeApiUrl(config.baseUrl, mode);
+  const requestBody = buildRequestBody(config.model, messages, customConfig, mode);
   const debug: ThirdPartyDebug = {
     requestUrl,
     requestBodyPreview: JSON.stringify(requestBody, null, 2).slice(0, 1200),
@@ -405,7 +501,7 @@ const generateWithThirdParty = async ({
       throw error;
     }
 
-    const text = getTextFromChatResponse(payload);
+    const text = getTextFromLlmResponse(payload, mode);
     if (!text) {
       const error = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
       error.debug = debug;
