@@ -540,36 +540,85 @@ const buildSummaryReport = (
 ) => {
   const generatedAt = new Date().toLocaleString('zh-CN');
   const latestValidations = validations.slice(0, 10);
-  return [
-    `# ${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · 跟踪与验证系统`,
+  const scopeLabel = scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报';
+
+  const sections: string[] = [
+    `# ${scopeLabel} · 跟踪与验证系统`,
     '',
     `- 生成时间：${generatedAt}`,
     `- 覆盖标的数：${reports.length}`,
     `- 策略数：${portfolios.length}`,
     '',
-    '## 组合表现',
-    ...portfolios.map((portfolio) => {
-      const latest = portfolio.history[0];
-      return `- ${portfolio.strategyName}：净值 ${latest?.equity ?? portfolio.initialCash}，现金 ${latest?.cash ?? portfolio.cash}，持仓数 ${portfolio.positions.length}`;
-    }),
-    '',
-    '## 最新 AI 观点',
-    ...reports.slice(0, 8).map((report) =>
-      `- ${report.symbol}：${report.structured.direction} / ${report.structured.action} / 置信度 ${report.structured.confidence}，${report.structured.summary}`,
-    ),
-    '',
-    '## 最近验证结果',
-    ...latestValidations.map((item) =>
-      `- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '正确' : '失效'} · 建议${item.recommendationEffective ? '有效' : '失效'}`,
-    ),
-    ...(failedSymbols.length > 0
-      ? [
-          '',
-          '## 本次跳过的标的',
-          ...failedSymbols.map((item) => `- ${item.symbol}：${item.error}`),
-        ]
-      : []),
-  ].join('\n');
+  ];
+
+  // === 组合表现 ===
+  sections.push('## 组合表现', '');
+  for (const portfolio of portfolios) {
+    const latest = portfolio.history[0];
+    const equity = latest?.equity ?? portfolio.initialCash;
+    const cash = latest?.cash ?? portfolio.cash;
+    const pnl = equity - portfolio.initialCash;
+    const pnlPct = ((pnl / portfolio.initialCash) * 100).toFixed(2);
+    sections.push(`### ${portfolio.strategyName}`);
+    sections.push(`- 净值：${equity.toLocaleString()}（${pnl >= 0 ? '+' : ''}${pnlPct}%）`);
+    sections.push(`- 现金：${cash.toLocaleString()}，持仓数：${portfolio.positions.length}`);
+
+    if (portfolio.positions.length > 0) {
+      sections.push('- 持仓明细：');
+      for (const pos of portfolio.positions) {
+        sections.push(`  - ${pos.symbol}（${pos.name}）：${pos.quantity.toFixed(2)} 股 × ${pos.marketPrice}，权重 ${pos.weight}%，浮盈 ${pos.unrealizedPnl >= 0 ? '+' : ''}${pos.unrealizedPnl}`);
+      }
+    }
+
+    const recentTrades = portfolio.trades.slice(0, 5);
+    if (recentTrades.length > 0) {
+      sections.push('- 最近交易：');
+      for (const trade of recentTrades) {
+        sections.push(`  - ${trade.executedAt.slice(0, 10)} ${trade.side.toUpperCase()} ${trade.symbol} × ${trade.quantity.toFixed(2)} @ ${trade.price}（${trade.reason.slice(0, 40)}）`);
+      }
+    }
+
+    sections.push('');
+  }
+
+  // === AI 观点摘要 ===
+  sections.push('## 最新 AI 观点', '');
+  for (const report of reports.slice(0, 8)) {
+    sections.push(`- **${report.symbol}**：${report.structured.direction} / ${report.structured.action} / 置信度 ${report.structured.confidence}，${report.structured.summary}`);
+  }
+  sections.push('');
+
+  // === AI 完整分析（重点标的） ===
+  const aiReports = reports.filter((r) => r.analysis && !r.analysis.startsWith('## ') && !r.analysis.includes('由于未启用服务端'));
+  if (aiReports.length > 0) {
+    sections.push('## AI 专业分析全文', '');
+    for (const report of aiReports) {
+      sections.push(`### ${report.symbol}（${report.quote.shortName || report.quote.longName || report.symbol}）`, '');
+      sections.push(report.analysis);
+      sections.push('');
+      sections.push('---', '');
+    }
+  }
+
+  // === 验证结果 ===
+  if (latestValidations.length > 0) {
+    sections.push('## 最近验证结果', '');
+    for (const item of latestValidations) {
+      sections.push(`- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '✅正确' : '❌失效'} · 建议${item.recommendationEffective ? '✅有效' : '❌失效'}（对齐分 ${item.strategyAlignmentScore}）`);
+    }
+    sections.push('');
+  }
+
+  // === 失败标的 ===
+  if (failedSymbols.length > 0) {
+    sections.push('## 本次跳过的标的', '');
+    for (const item of failedSymbols) {
+      sections.push(`- ${item.symbol}：${item.error}`);
+    }
+    sections.push('');
+  }
+
+  return sections.join('\n');
 };
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) => {
