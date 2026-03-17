@@ -2,128 +2,6 @@ import fs from 'fs';
 import path from 'path';
 import type { AnalysisPacket, IndicatorSnapshot } from './src/lib/market-analysis.js';
 
-/**
- * Storage backend abstraction.
- * - Vercel KV (Redis): when KV_REST_API_URL + KV_REST_API_TOKEN are set (Vercel 部署)
- * - Local filesystem: fallback for本地开发
- *
- * Vercel KV setup: https://vercel.com/docs/storage/vercel-kv
- * 在 Vercel Dashboard → Storage → Create → KV，连接到项目后环境变量自动注入。
- */
-
-const KV_KEY = 'market-analyzer:tracking-state';
-
-// ---- Vercel KV client (lightweight, no SDK dependency) ----
-
-const kvConfig = {
-  url: process.env.KV_REST_API_URL || '',
-  token: process.env.KV_REST_API_TOKEN || '',
-};
-const useKV = Boolean(kvConfig.url && kvConfig.token);
-
-const kvGet = async (key: string): Promise<string | null> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const res = await fetch(`${kvConfig.url}/get/${key}`, {
-      headers: { Authorization: `Bearer ${kvConfig.token}` },
-      signal: controller.signal,
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.result ?? null;
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-const kvSet = async (key: string, value: string): Promise<void> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    await fetch(`${kvConfig.url}`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${kvConfig.token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(['SET', key, value]),
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-};
-
-// ---- Local filesystem fallback ----
-
-const resolveDataDir = () => {
-  const configuredDir = process.env.TRACKING_DATA_DIR?.trim();
-  if (configuredDir) return configuredDir;
-  const cwd = process.cwd();
-  const vercelRuntime = process.env.VERCEL === '1' || cwd.startsWith('/var/task');
-  if (vercelRuntime) return path.join('/tmp', 'market-analyzer-tracking');
-  return path.join(cwd, 'data');
-};
-
-const dataDir = resolveDataDir();
-const dataFile = path.join(dataDir, 'tracking-system.json');
-
-const ensureLocalStore = () => {
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-};
-
-const readLocalState = (): TrackingState => {
-  ensureLocalStore();
-  if (!fs.existsSync(dataFile)) return createEmptyState();
-  const raw = fs.readFileSync(dataFile, 'utf8');
-  return normalizeTrackingState(JSON.parse(raw));
-};
-
-const writeLocalState = (state: TrackingState) => {
-  ensureLocalStore();
-  fs.writeFileSync(dataFile, JSON.stringify(state, null, 2), 'utf8');
-};
-
-// ---- Unified async read/write ----
-
-const readState = async (): Promise<TrackingState> => {
-  if (useKV) {
-    try {
-      const raw = await kvGet(KV_KEY);
-      if (raw) {
-        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        return normalizeTrackingState(parsed);
-      }
-    } catch (err) {
-      console.warn('KV read failed, falling back to local:', err instanceof Error ? err.message : err);
-    }
-  }
-  return readLocalState();
-};
-
-const writeState = async (state: TrackingState): Promise<void> => {
-  const json = JSON.stringify(state);
-  if (useKV) {
-    try {
-      await kvSet(KV_KEY, json);
-    } catch (err) {
-      console.warn('KV write failed, falling back to local:', err instanceof Error ? err.message : err);
-      writeLocalState(state);
-    }
-  } else {
-    writeLocalState(state);
-  }
-};
-
-if (useKV) {
-  console.log('💾 Storage: Vercel KV (persistent across deployments)');
-} else {
-  console.log('💾 Storage: Local filesystem (data lost on Vercel cold start)');
-}
-
 export type StrategyId =
   | 'global-value'
   | 'global-growth'
@@ -400,15 +278,15 @@ const inferMarket = (symbol: string) => {
   return 'GLOBAL';
 };
 
-export const listTrackingOverview = async () => readState();
+export const listTrackingOverview = () => readState();
 
-export const addWatchlistAsset = async (input: {
+export const addWatchlistAsset = (input: {
   symbol: string;
   name?: string;
   tags?: string[];
   notes?: string;
 }) => {
-  const state = await readState();
+  const state = readState();
   const symbol = input.symbol.trim().toUpperCase();
   const existing = state.watchlist.find((item) => item.symbol === symbol);
   if (existing) return state;
@@ -423,19 +301,19 @@ export const addWatchlistAsset = async (input: {
     notes: input.notes || '',
     addedAt: new Date().toISOString(),
   });
-  await writeState(state);
+  writeState(state);
   return state;
 };
 
-export const removeWatchlistAsset = async (symbol: string) => {
-  const state = await readState();
+export const removeWatchlistAsset = (symbol: string) => {
+  const state = readState();
   state.watchlist = state.watchlist.filter((item) => item.symbol !== symbol.toUpperCase());
-  await writeState(state);
+  writeState(state);
   return state;
 };
 
-export const toggleWatchlistTag = async (symbol: string, tag: string) => {
-  const state = await readState();
+export const toggleWatchlistTag = (symbol: string, tag: string) => {
+  const state = readState();
   const normalizedSymbol = symbol.toUpperCase();
   state.watchlist = state.watchlist.map((item) => {
     if (item.symbol !== normalizedSymbol) return item;
@@ -447,12 +325,12 @@ export const toggleWatchlistTag = async (symbol: string, tag: string) => {
       priority: tag === '重点' ? (exists ? 0 : Math.max(1, item.priority || 0)) : item.priority,
     };
   });
-  await writeState(state);
+  writeState(state);
   return state;
 };
 
-export const setWatchlistPriority = async (symbol: string, priority: number) => {
-  const state = await readState();
+export const setWatchlistPriority = (symbol: string, priority: number) => {
+  const state = readState();
   const normalizedSymbol = symbol.toUpperCase();
   const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
 
@@ -470,7 +348,7 @@ export const setWatchlistPriority = async (symbol: string, priority: number) => 
     };
   });
 
-  await writeState(state);
+  writeState(state);
   return state;
 };
 
@@ -662,85 +540,36 @@ const buildSummaryReport = (
 ) => {
   const generatedAt = new Date().toLocaleString('zh-CN');
   const latestValidations = validations.slice(0, 10);
-  const scopeLabel = scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报';
-
-  const sections: string[] = [
-    `# ${scopeLabel} · 跟踪与验证系统`,
+  return [
+    `# ${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · 跟踪与验证系统`,
     '',
     `- 生成时间：${generatedAt}`,
     `- 覆盖标的数：${reports.length}`,
     `- 策略数：${portfolios.length}`,
     '',
-  ];
-
-  // === 组合表现 ===
-  sections.push('## 组合表现', '');
-  for (const portfolio of portfolios) {
-    const latest = portfolio.history[0];
-    const equity = latest?.equity ?? portfolio.initialCash;
-    const cash = latest?.cash ?? portfolio.cash;
-    const pnl = equity - portfolio.initialCash;
-    const pnlPct = ((pnl / portfolio.initialCash) * 100).toFixed(2);
-    sections.push(`### ${portfolio.strategyName}`);
-    sections.push(`- 净值：${equity.toLocaleString()}（${pnl >= 0 ? '+' : ''}${pnlPct}%）`);
-    sections.push(`- 现金：${cash.toLocaleString()}，持仓数：${portfolio.positions.length}`);
-
-    if (portfolio.positions.length > 0) {
-      sections.push('- 持仓明细：');
-      for (const pos of portfolio.positions) {
-        sections.push(`  - ${pos.symbol}（${pos.name}）：${pos.quantity.toFixed(2)} 股 × ${pos.marketPrice}，权重 ${pos.weight}%，浮盈 ${pos.unrealizedPnl >= 0 ? '+' : ''}${pos.unrealizedPnl}`);
-      }
-    }
-
-    const recentTrades = portfolio.trades.slice(0, 5);
-    if (recentTrades.length > 0) {
-      sections.push('- 最近交易：');
-      for (const trade of recentTrades) {
-        sections.push(`  - ${trade.executedAt.slice(0, 10)} ${trade.side.toUpperCase()} ${trade.symbol} × ${trade.quantity.toFixed(2)} @ ${trade.price}（${trade.reason.slice(0, 40)}）`);
-      }
-    }
-
-    sections.push('');
-  }
-
-  // === AI 观点摘要 ===
-  sections.push('## 最新 AI 观点', '');
-  for (const report of reports.slice(0, 8)) {
-    sections.push(`- **${report.symbol}**：${report.structured.direction} / ${report.structured.action} / 置信度 ${report.structured.confidence}，${report.structured.summary}`);
-  }
-  sections.push('');
-
-  // === AI 完整分析（重点标的） ===
-  const aiReports = reports.filter((r) => r.analysis && !r.analysis.startsWith('## ') && !r.analysis.includes('由于未启用服务端'));
-  if (aiReports.length > 0) {
-    sections.push('## AI 专业分析全文', '');
-    for (const report of aiReports) {
-      sections.push(`### ${report.symbol}（${report.quote.shortName || report.quote.longName || report.symbol}）`, '');
-      sections.push(report.analysis);
-      sections.push('');
-      sections.push('---', '');
-    }
-  }
-
-  // === 验证结果 ===
-  if (latestValidations.length > 0) {
-    sections.push('## 最近验证结果', '');
-    for (const item of latestValidations) {
-      sections.push(`- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '✅正确' : '❌失效'} · 建议${item.recommendationEffective ? '✅有效' : '❌失效'}（对齐分 ${item.strategyAlignmentScore}）`);
-    }
-    sections.push('');
-  }
-
-  // === 失败标的 ===
-  if (failedSymbols.length > 0) {
-    sections.push('## 本次跳过的标的', '');
-    for (const item of failedSymbols) {
-      sections.push(`- ${item.symbol}：${item.error}`);
-    }
-    sections.push('');
-  }
-
-  return sections.join('\n');
+    '## 组合表现',
+    ...portfolios.map((portfolio) => {
+      const latest = portfolio.history[0];
+      return `- ${portfolio.strategyName}：净值 ${latest?.equity ?? portfolio.initialCash}，现金 ${latest?.cash ?? portfolio.cash}，持仓数 ${portfolio.positions.length}`;
+    }),
+    '',
+    '## 最新 AI 观点',
+    ...reports.slice(0, 8).map((report) =>
+      `- ${report.symbol}：${report.structured.direction} / ${report.structured.action} / 置信度 ${report.structured.confidence}，${report.structured.summary}`,
+    ),
+    '',
+    '## 最近验证结果',
+    ...latestValidations.map((item) =>
+      `- ${item.symbol}：收益 ${item.actualReturnPct}% · 方向${item.directionCorrect ? '正确' : '失效'} · 建议${item.recommendationEffective ? '有效' : '失效'}`,
+    ),
+    ...(failedSymbols.length > 0
+      ? [
+          '',
+          '## 本次跳过的标的',
+          ...failedSymbols.map((item) => `- ${item.symbol}：${item.error}`),
+        ]
+      : []),
+  ].join('\n');
 };
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string) => {
@@ -780,20 +609,15 @@ export const runTrackingCycle = async ({
   fetchAsset,
   generateAnalysis,
 }: RunTrackingCycleOptions) => {
-  const state = initialState ? normalizeTrackingState(initialState) : await readState();
+  const state = initialState ? normalizeTrackingState(initialState) : readState();
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
-  const isVercel = process.env.VERCEL === '1';
-  const fetchTimeoutMs = Number(process.env.TRACKING_FETCH_TIMEOUT_MS) || (isVercel ? 10000 : 25000);
-  const analysisTimeoutMs = Number(process.env.TRACKING_ANALYSIS_TIMEOUT_MS) || (isVercel ? 35000 : 80000);
-  const concurrency = Number(process.env.TRACKING_CONCURRENCY) || (isVercel ? 3 : 2);
-
-  const settledReports = await runWithConcurrency(state.watchlist, concurrency, async (asset) => {
-    const bundle = await withTimeout(fetchAsset(asset.symbol), fetchTimeoutMs, `${asset.symbol} 行情抓取`);
+  const settledReports = await runWithConcurrency(state.watchlist, 3, async (asset) => {
+    const bundle = await withTimeout(fetchAsset(asset.symbol), 12000, `${asset.symbol} 行情抓取`);
     const analysis = await withTimeout(
       generateAnalysis(asset.symbol, bundle),
-      analysisTimeoutMs,
+      12000,
       `${asset.symbol} 分析生成`,
     );
     const structured = deriveStructuredView(bundle.quote.regularMarketPrice || bundle.packet.snapshot.price, bundle.packet.snapshot);
@@ -830,7 +654,7 @@ export const runTrackingCycle = async ({
 
   if (nextReports.length === 0) {
     const details = failedSymbols.slice(0, 5).map((item) => `${item.symbol}: ${item.error}`).join('；');
-    throw new Error(details ? `本次${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}生成失败，全部标的处理异常。${details}` : `本次${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}生成失败，未能处理任何标的。请检查 API Key 配置和网络连接。`);
+    throw new Error(details ? `本次日报生成失败，全部标的处理异常。${details}` : '本次日报生成失败，未能处理任何标的。');
   }
 
   state.latestReports = nextReports;
@@ -858,7 +682,7 @@ export const runTrackingCycle = async ({
   state.generatedReports = state.generatedReports.slice(0, 60);
 
   if (persist) {
-    await writeState(state);
+    writeState(state);
   }
   return state;
 };
