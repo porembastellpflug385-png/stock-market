@@ -81,6 +81,7 @@ export const scannerTemplates: ScannerTemplate[] = [
 ];
 
 export const scannerUniverse: ScannerUniverseAsset[] = [
+  // ===== US 美股（35只） =====
   { symbol: 'AAPL', name: 'Apple Inc.', market: 'US', assetClass: 'equity' },
   { symbol: 'MSFT', name: 'Microsoft Corp.', market: 'US', assetClass: 'equity' },
   { symbol: 'NVDA', name: 'NVIDIA Corp.', market: 'US', assetClass: 'equity' },
@@ -115,6 +116,8 @@ export const scannerUniverse: ScannerUniverseAsset[] = [
   { symbol: 'KO', name: 'Coca-Cola Co.', market: 'US', assetClass: 'equity' },
   { symbol: 'BRK-B', name: 'Berkshire Hathaway B', market: 'US', assetClass: 'equity' },
   { symbol: 'UNH', name: 'UnitedHealth Group', market: 'US', assetClass: 'equity' },
+  { symbol: 'MA', name: 'Mastercard Inc.', market: 'US', assetClass: 'equity' },
+  // ===== CN A股（22只） =====
   { symbol: '600519.SS', name: '贵州茅台', market: 'CN', assetClass: 'equity' },
   { symbol: '000858.SZ', name: '五粮液', market: 'CN', assetClass: 'equity' },
   { symbol: '300750.SZ', name: '宁德时代', market: 'CN', assetClass: 'equity' },
@@ -137,6 +140,7 @@ export const scannerUniverse: ScannerUniverseAsset[] = [
   { symbol: '300308.SZ', name: '中际旭创', market: 'CN', assetClass: 'equity' },
   { symbol: '002230.SZ', name: '科大讯飞', market: 'CN', assetClass: 'equity' },
   { symbol: '600941.SS', name: '中国移动', market: 'CN', assetClass: 'equity' },
+  // ===== HK 港股（11只） =====
   { symbol: '0700.HK', name: '腾讯控股', market: 'HK', assetClass: 'equity' },
   { symbol: '9988.HK', name: '阿里巴巴-SW', market: 'HK', assetClass: 'equity' },
   { symbol: '3690.HK', name: '美团-W', market: 'HK', assetClass: 'equity' },
@@ -148,22 +152,32 @@ export const scannerUniverse: ScannerUniverseAsset[] = [
   { symbol: '1024.HK', name: '快手-W', market: 'HK', assetClass: 'equity' },
   { symbol: '2269.HK', name: '药明生物', market: 'HK', assetClass: 'equity' },
   { symbol: '2382.HK', name: '舜宇光学科技', market: 'HK', assetClass: 'equity' },
+  // ===== ETF（24只） =====
   { symbol: 'SPY', name: 'SPDR S&P 500 ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'QQQ', name: 'Invesco QQQ', market: 'ETF', assetClass: 'etf' },
   { symbol: 'IWM', name: 'iShares Russell 2000 ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'DIA', name: 'SPDR Dow Jones ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'TLT', name: 'iShares 20+ Year Treasury Bond ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'GLD', name: 'SPDR Gold Shares', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'SLV', name: 'iShares Silver Trust', market: 'ETF', assetClass: 'etf' },
   { symbol: 'XLE', name: 'Energy Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
   { symbol: 'SOXX', name: 'iShares Semiconductor ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'SMH', name: 'VanEck Semiconductor ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'XLK', name: 'Technology Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
   { symbol: 'XLF', name: 'Financial Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
-  { symbol: 'XLY', name: 'Consumer Discretionary Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'XLV', name: 'Health Care Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'XLY', name: 'Consumer Discretionary SPDR', market: 'ETF', assetClass: 'etf' },
   { symbol: 'XLI', name: 'Industrial Select Sector SPDR', market: 'ETF', assetClass: 'etf' },
   { symbol: 'ARKK', name: 'ARK Innovation ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'KWEB', name: 'KraneShares CSI China Internet ETF', market: 'ETF', assetClass: 'etf' },
-  { symbol: 'HYG', name: 'iShares iBoxx High Yield Corporate Bond ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'HYG', name: 'iShares High Yield Corporate Bond ETF', market: 'ETF', assetClass: 'etf' },
   { symbol: 'VNQ', name: 'Vanguard Real Estate ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'EEM', name: 'iShares MSCI Emerging Markets ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'IBIT', name: 'iShares Bitcoin Trust ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'USO', name: 'United States Oil Fund', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'EFA', name: 'iShares MSCI EAFE ETF', market: 'ETF', assetClass: 'etf' },
+  { symbol: 'VWO', name: 'Vanguard FTSE Emerging Markets ETF', market: 'ETF', assetClass: 'etf' },
+  // ===== CRYPTO 加密（10只） =====
   { symbol: 'BTC-USD', name: 'Bitcoin', market: 'CRYPTO', assetClass: 'crypto' },
   { symbol: 'ETH-USD', name: 'Ethereum', market: 'CRYPTO', assetClass: 'crypto' },
   { symbol: 'SOL-USD', name: 'Solana', market: 'CRYPTO', assetClass: 'crypto' },
@@ -175,6 +189,139 @@ export const scannerUniverse: ScannerUniverseAsset[] = [
   { symbol: 'LINK-USD', name: 'Chainlink', market: 'CRYPTO', assetClass: 'crypto' },
   { symbol: 'SUI-USD', name: 'Sui', market: 'CRYPTO', assetClass: 'crypto' },
 ];
+
+/* ============================================================
+   Dynamic discovery — fire-and-forget background refresh
+   getScannerUniverse remains SYNCHRONOUS (critical for Vercel)
+   ============================================================ */
+
+let _discoveredAssets: ScannerUniverseAsset[] = [];
+let _discoveryFetchedAt = 0;
+const DISCOVERY_TTL = 10 * 60 * 1000;
+
+const _inferMarket = (s: string): ScannerMarket => {
+  if (s.endsWith('.SS') || s.endsWith('.SZ')) return 'CN';
+  if (s.endsWith('.HK')) return 'HK';
+  if (s.endsWith('-USD')) return 'CRYPTO';
+  return 'US';
+};
+
+const _ETF_TICKERS = new Set('SPY,QQQ,IWM,DIA,TLT,GLD,SLV,SOXX,SMH,ARKK,KWEB,HYG,VNQ,EEM,EFA,IBIT,USO,VWO,VOO,VTI,VXUS,XLE,XLK,XLF,XLV,XLY,XLI,XLP,XLU,XLB,XLRE,ARKW,ARKG,FXI,GDX,GDXJ,XBI,IBB,KRE,XHB,SOXL,TQQQ,SQQQ,JEPI,JEPQ,SCHD,BITO'.split(','));
+
+const _inferAssetClass = (s: string): 'equity' | 'etf' | 'crypto' => {
+  if (s.endsWith('-USD')) return 'crypto';
+  if (_ETF_TICKERS.has(s.toUpperCase())) return 'etf';
+  return 'equity';
+};
+
+const _safeFetch = async (url: string, headers?: Record<string, string>): Promise<any> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(url, { headers, signal: controller.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; } finally { clearTimeout(timer); }
+};
+
+const _refreshDiscovery = async () => {
+  const all: ScannerUniverseAsset[] = [];
+  const UA = { 'User-Agent': 'Mozilla/5.0' };
+
+  // Yahoo trending (US)
+  try {
+    const j = await _safeFetch('https://query1.finance.yahoo.com/v1/finance/trending/US?count=25', UA);
+    for (const q of (j?.finance?.result?.[0]?.quotes || [])) {
+      if (q?.symbol) all.push({ symbol: q.symbol, name: q.symbol, market: _inferMarket(q.symbol), assetClass: _inferAssetClass(q.symbol) });
+    }
+  } catch {}
+
+  // Yahoo day gainers
+  try {
+    const j = await _safeFetch('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=day_gainers&count=15', UA);
+    for (const q of (j?.finance?.result?.[0]?.quotes || [])) {
+      if (q?.symbol && (q?.marketCap ?? 0) > 1e9) all.push({ symbol: q.symbol, name: q.shortName || q.symbol, market: _inferMarket(q.symbol), assetClass: _inferAssetClass(q.symbol) });
+    }
+  } catch {}
+
+  // Yahoo most actives
+  try {
+    const j = await _safeFetch('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives&count=15', UA);
+    for (const q of (j?.finance?.result?.[0]?.quotes || [])) {
+      if (q?.symbol && (q?.marketCap ?? 0) > 1e9) all.push({ symbol: q.symbol, name: q.shortName || q.symbol, market: _inferMarket(q.symbol), assetClass: _inferAssetClass(q.symbol) });
+    }
+  } catch {}
+
+  // Yahoo active ETFs
+  try {
+    const j = await _safeFetch('https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives_etfs&count=20', UA);
+    for (const q of (j?.finance?.result?.[0]?.quotes || [])) {
+      if (q?.symbol) all.push({ symbol: q.symbol, name: q.shortName || q.symbol, market: 'ETF', assetClass: 'etf' });
+    }
+  } catch {}
+
+  // Eastmoney A-share gainers
+  try {
+    const j = await _safeFetch('https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fid=f3&po=1&pn=1&pz=15&fields=f12,f14');
+    for (const item of (j?.data?.diff || [])) {
+      if (item?.f12 && item?.f14) {
+        const code = String(item.f12);
+        const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+        all.push({ symbol: `${code}${suffix}`, name: String(item.f14), market: 'CN', assetClass: 'equity' });
+      }
+    }
+  } catch {}
+
+  // Eastmoney A-share volume leaders
+  try {
+    const j = await _safeFetch('https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fid=f5&po=1&pn=1&pz=10&fields=f12,f14');
+    for (const item of (j?.data?.diff || [])) {
+      if (item?.f12 && item?.f14) {
+        const code = String(item.f12);
+        const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+        all.push({ symbol: `${code}${suffix}`, name: String(item.f14), market: 'CN', assetClass: 'equity' });
+      }
+    }
+  } catch {}
+
+  // HK Connect hot stocks
+  try {
+    const j = await _safeFetch('https://push2.eastmoney.com/api/qt/clist/get?fs=b:DLMK0144&fid=f3&po=1&pn=1&pz=10&fields=f12,f14');
+    for (const item of (j?.data?.diff || [])) {
+      if (item?.f12 && item?.f14) {
+        all.push({ symbol: `${String(item.f12).padStart(4, '0')}.HK`, name: String(item.f14), market: 'HK', assetClass: 'equity' });
+      }
+    }
+  } catch {}
+
+  // CoinGecko trending
+  try {
+    const j = await _safeFetch('https://api.coingecko.com/api/v3/search/trending');
+    for (const entry of (j?.coins || []).slice(0, 8)) {
+      const coin = entry?.item;
+      if (coin?.symbol) all.push({ symbol: `${String(coin.symbol).toUpperCase()}-USD`, name: coin.name || coin.symbol, market: 'CRYPTO', assetClass: 'crypto' });
+    }
+  } catch {}
+
+  // ETF reclassification
+  for (const a of all) {
+    if (a.assetClass !== 'etf' && _ETF_TICKERS.has(a.symbol.toUpperCase())) {
+      a.assetClass = 'etf';
+      a.market = 'ETF';
+    }
+  }
+
+  _discoveredAssets = all;
+  _discoveryFetchedAt = Date.now();
+  console.log(`🔍 Dynamic discovery: ${all.length} assets found`);
+};
+
+/** Trigger background refresh if cache expired (non-blocking) */
+const _ensureDiscovery = () => {
+  if (Date.now() - _discoveryFetchedAt > DISCOVERY_TTL) {
+    _refreshDiscovery().catch(() => {});
+  }
+};
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 const round = (value: number, digits = 2) => Number(value.toFixed(digits));
@@ -333,8 +480,22 @@ export const evaluateScannerTemplate = (
   return null;
 };
 
-export const getScannerUniverse = (markets?: ScannerMarket[]) => {
-  if (!markets || markets.length === 0) return scannerUniverse;
-  const marketSet = new Set(markets);
-  return scannerUniverse.filter((item) => marketSet.has(item.market));
+export const getScannerUniverse = (markets?: ScannerMarket[]): ScannerUniverseAsset[] => {
+  _ensureDiscovery(); // fire-and-forget, non-blocking
+
+  // Merge core + discovered, deduplicate by symbol
+  const seen = new Set<string>();
+  const merged: ScannerUniverseAsset[] = [];
+  for (const a of scannerUniverse) {
+    if (!seen.has(a.symbol)) { seen.add(a.symbol); merged.push(a); }
+  }
+  for (const a of _discoveredAssets) {
+    if (!seen.has(a.symbol)) { seen.add(a.symbol); merged.push(a); }
+  }
+
+  if (markets && markets.length > 0) {
+    const s = new Set(markets);
+    return merged.filter((a) => s.has(a.market));
+  }
+  return merged;
 };
