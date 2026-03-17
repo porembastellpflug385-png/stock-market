@@ -1,5 +1,15 @@
 import type { AnalysisPacket } from './src/lib/market-analysis.js';
 
+const fetchWithTimeout = async (url: string | URL, init?: RequestInit, ms = 5000): Promise<Response> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url instanceof URL ? url.toString() : url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export type ScannerTemplateId =
   | 'breakout'
   | 'volume-surge'
@@ -178,9 +188,8 @@ const inferAssetClass = (symbol: string): 'equity' | 'etf' | 'crypto' => {
 /** Yahoo Finance 热门 — 美股/加密当日热搜 */
 const fetchYahooTrending = async (): Promise<ScannerUniverseAsset[]> => {
   try {
-    const res = await fetch('https://query1.finance.yahoo.com/v1/finance/trending/US?count=30', {
+    const res = await fetchWithTimeout('https://query1.finance.yahoo.com/v1/finance/trending/US?count=30', {
       headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })(),
     });
     if (!res.ok) return [];
     const json = await res.json();
@@ -204,9 +213,9 @@ const fetchYahooTrending = async (): Promise<ScannerUniverseAsset[]> => {
 /** Yahoo Finance 筛选器 — 当日涨幅/跌幅/成交活跃 */
 const fetchYahooScreener = async (scrId: string, count = 15): Promise<ScannerUniverseAsset[]> => {
   try {
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=${scrId}&count=${count}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })() },
+      { headers: { 'User-Agent': 'Mozilla/5.0' } },
     );
     if (!res.ok) return [];
     const json = await res.json();
@@ -236,7 +245,7 @@ const fetchEastmoneyMovers = async (sortField: string, count = 20): Promise<Scan
     url.searchParams.set('pn', '1');
     url.searchParams.set('pz', String(count));
     url.searchParams.set('fields', 'f12,f14');
-    const res = await fetch(url, { signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })() });
+    const res = await fetchWithTimeout(url, undefined);
     if (!res.ok) return [];
     const json = await res.json();
     const items = json?.data?.diff || [];
@@ -269,7 +278,7 @@ const fetchHKConnect = async (count = 15): Promise<ScannerUniverseAsset[]> => {
     url.searchParams.set('pn', '1');
     url.searchParams.set('pz', String(count));
     url.searchParams.set('fields', 'f12,f14');
-    const res = await fetch(url, { signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })() });
+    const res = await fetchWithTimeout(url, undefined);
     if (!res.ok) return [];
     const json = await res.json();
     const items = json?.data?.diff || [];
@@ -291,9 +300,7 @@ const fetchHKConnect = async (count = 15): Promise<ScannerUniverseAsset[]> => {
 /** CoinGecko 加密货币热度榜 */
 const fetchCryptoTrending = async (): Promise<ScannerUniverseAsset[]> => {
   try {
-    const res = await fetch('https://api.coingecko.com/api/v3/search/trending', {
-      signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })(),
-    });
+    const res = await fetchWithTimeout('https://api.coingecko.com/api/v3/search/trending');
     if (!res.ok) return [];
     const json = await res.json();
     return (json?.coins || [])
@@ -320,9 +327,9 @@ const fetchCryptoTrending = async (): Promise<ScannerUniverseAsset[]> => {
 const fetchYahooEtfMovers = async (count = 20): Promise<ScannerUniverseAsset[]> => {
   try {
     // most_actives_etfs 是 Yahoo 内置的 ETF 活跃榜
-    const res = await fetch(
+    const res = await fetchWithTimeout(
       `https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved?scrIds=most_actives_etfs&count=${count}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: (() => { const c = new AbortController(); setTimeout(() => c.abort(), 5000); return c.signal; })() },
+      { headers: { 'User-Agent': 'Mozilla/5.0' } },
     );
     if (!res.ok) return [];
     const json = await res.json();
