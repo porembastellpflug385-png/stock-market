@@ -890,38 +890,112 @@ const createPdfReport = async ({
 
   try {
     const page = reportRoot.querySelector('.page') as HTMLElement | null;
-    if (!page) {
-      throw new Error('报告内容渲染失败');
+    if (!page) throw new Error('报告内容渲染失败');
+
+    const sheet = page.querySelector('.sheet') as HTMLElement | null;
+    if (!sheet) throw new Error('报告 sheet 渲染失败');
+
+    // A4 尺寸和边距
+    const renderWidth = 860;
+    const A4W = 595.28;
+    const A4H = 841.89;
+    const mx = 36;
+    const my = 42;
+    const usableW = A4W - mx * 2;
+    const usableH = A4H - my * 2;
+    const pxPerPt = renderWidth / usableW;
+    const maxContentPx = usableH * pxPerPt - 140; // 140px reserved for card padding + page number
+
+    // 收集所有可拆分的内容块
+    const heroSection = sheet.querySelector('.hero') as HTMLElement | null;
+    const articleEl = sheet.querySelector('.article') as HTMLElement | null;
+    const allBlocks: HTMLElement[] = [];
+    if (articleEl) {
+      allBlocks.push(...(Array.from(articleEl.children) as HTMLElement[]));
     }
 
-    const canvas = await html2canvas(page, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#eef4f9',
-      logging: false,
-    });
+    // 将内容块分组到各页
+    const contentPages: { isHero: boolean; blocks: HTMLElement[] }[] = [];
 
-    const imgData = canvas.toDataURL('image/png');
+    // 第一页始终放 hero
+    if (heroSection) {
+      contentPages.push({ isHero: true, blocks: [heroSection] });
+    }
+
+    // 后续页放分析内容
+    let curBlocks: HTMLElement[] = [];
+    let curH = 0;
+    for (const block of allBlocks) {
+      const bh = block.getBoundingClientRect().height;
+      if (curH + bh > maxContentPx && curBlocks.length > 0) {
+        contentPages.push({ isHero: false, blocks: curBlocks });
+        curBlocks = [];
+        curH = 0;
+      }
+      curBlocks.push(block);
+      curH += bh + 8;
+    }
+    if (curBlocks.length > 0) {
+      contentPages.push({ isHero: false, blocks: curBlocks });
+    }
+
+    const totalPages = contentPages.length;
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const marginX = 36;
-    const marginY = 42;
-    const usableWidth = pageWidth - marginX * 2;
-    const usableHeight = pageHeight - marginY * 2;
-    const imgWidth = usableWidth;
-    const imgHeight = (canvas.height * imgWidth) / canvas.width;
 
-    // 第一页
-    let offsetY = 0;
-    doc.addImage(imgData, 'PNG', marginX, marginY - offsetY, imgWidth, imgHeight, undefined, 'FAST');
-    offsetY += usableHeight;
+    const cardStyle = `
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,252,255,0.96));
+      border: 1px solid rgba(15,23,42,0.07);
+      border-radius: 32px;
+      box-shadow: 0 28px 80px rgba(15,23,42,0.08), inset 0 1px 0 rgba(255,255,255,0.9);
+      padding: 34px 34px 28px;
+      font-family: "SF Pro Display","PingFang SC","Helvetica Neue",Arial,sans-serif;
+      color: #0f172a;
+    `;
 
-    // 续页：裁切显示，每页保持上下边距
-    while (offsetY < imgHeight) {
-      doc.addPage();
-      doc.addImage(imgData, 'PNG', marginX, marginY - offsetY, imgWidth, imgHeight, undefined, 'FAST');
-      offsetY += usableHeight;
+    for (let i = 0; i < totalPages; i++) {
+      if (i > 0) doc.addPage();
+
+      const container = document.createElement('div');
+      container.style.cssText = `width:${renderWidth}px;background:linear-gradient(180deg,#f9fbfd 0%,#edf3f8 100%);padding:40px;`;
+
+      const card = document.createElement('div');
+      card.style.cssText = cardStyle;
+
+      // 克隆内容块
+      for (const el of contentPages[i].blocks) {
+        card.appendChild(el.cloneNode(true));
+      }
+
+      // 如果不是 hero 页，添加分析标题
+      if (!contentPages[i].isHero && i > 0) {
+        const header = document.createElement('div');
+        header.style.cssText = 'font-size:12px;letter-spacing:0.28em;text-transform:uppercase;color:#5f6f86;font-weight:700;margin-bottom:14px;';
+        header.textContent = `${ticker} · AI Analysis · Page ${i + 1}`;
+        card.insertBefore(header, card.firstChild);
+      }
+
+      // 页码
+      const pageNum = document.createElement('div');
+      pageNum.style.cssText = 'text-align:center;color:#5f6f86;font-size:11px;margin-top:24px;padding-top:16px;border-top:1px solid rgba(15,23,42,0.06);';
+      pageNum.textContent = `${i + 1} / ${totalPages}`;
+      card.appendChild(pageNum);
+
+      container.appendChild(card);
+      reportRoot.appendChild(container);
+
+      const canvas = await html2canvas(container, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#eef4f9',
+        logging: false,
+      });
+
+      const imgData = canvas.toDataURL('image/png');
+      const imgW = usableW;
+      const imgH = (canvas.height * imgW) / canvas.width;
+      doc.addImage(imgData, 'PNG', mx, my, imgW, imgH, undefined, 'FAST');
+
+      reportRoot.removeChild(container);
     }
 
     doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
@@ -3827,4 +3901,3 @@ function SignalCard({ title, value, detail }: { title: string; value: string; de
 }
 
 export default App;
-        
