@@ -581,29 +581,34 @@ const generateWithModel = async ({
   model,
   messages,
   customConfig,
+  primaryTimeoutMs,
 }: {
   model: string;
   messages: ThirdPartyMessage[];
   customConfig?: Record<string, unknown>;
+  primaryTimeoutMs?: number;
 }) => {
   if (!defaultServerProvider.apiKey) {
     throw new Error('OPENAI_API_KEY 未配置，无法调用 AI 服务。');
   }
 
-  // 先用指定模型
+  // 先用指定模型（带独立超时）
   try {
-    const result = await generateWithThirdParty({
+    const promise = generateWithThirdParty({
       messages,
       config: { ...defaultServerProvider, model },
       customConfig,
     });
+    const result = primaryTimeoutMs
+      ? await withTimeout(promise, primaryTimeoutMs, `${model} 主模型`)
+      : await promise;
     return { ...result, modelUsed: model };
   } catch (primaryError) {
-    // 指定模型失败，尝试 fallback 链中的其他模型
+    // 指定模型失败（超时/429/其他），尝试 fallback 链中的其他模型
     const fallbacks = DEFAULT_TEXT_MODEL_FALLBACKS.filter((m) => m !== model);
     if (fallbacks.length === 0) throw primaryError;
 
-    console.warn(`指定模型 ${model} 失败（${primaryError instanceof Error ? primaryError.message.slice(0, 100) : 'unknown'}），尝试 fallback: ${fallbacks.join(', ')}`);
+    console.warn(`主模型 ${model} 失败（${primaryError instanceof Error ? primaryError.message.slice(0, 100) : 'unknown'}），自动切换 fallback: ${fallbacks.join(', ')}`);
 
     for (const fallbackModel of fallbacks) {
       try {
@@ -851,22 +856,19 @@ const buildPrompt = (ticker: string, bundle: AnalysisBundleLike, preferences: An
   return msgs.map((m) => m.content).join('\n\n');
 };
 
-/** 单次股票分析 — 使用 ANALYSIS_MODEL（默认 gpt-5.4），不怕慢，追求质量 */
+/** 单次股票分析 — 使用 ANALYSIS_MODEL（默认 gpt-5.4），超时自动 fallback 到 claude */
 const generateInstitutionalAnalysis = async (
   ticker: string,
   bundle: AnalysisBundleLike,
   preferences: AnalysisPreferences,
 ) => {
   const messages = buildPromptMessages(ticker, bundle, preferences);
-  const result = await withTimeout(
-    generateWithModel({
-      model: ANALYSIS_MODEL,
-      messages,
-      customConfig: { temperature: 0.3, max_tokens: 4096 },
-    }),
-    DEFAULT_EXTERNAL_TIMEOUT_MS,
-    `${ticker} AI 分析 (${ANALYSIS_MODEL})`,
-  );
+  const result = await generateWithModel({
+    model: ANALYSIS_MODEL,
+    messages,
+    customConfig: { temperature: 0.3, max_tokens: 4096 },
+    primaryTimeoutMs: 75000,
+  });
   if (!result.text) {
     throw new Error(`${ticker} AI 分析返回空内容（模型: ${result.modelUsed}）`);
   }
@@ -1122,15 +1124,12 @@ export function createApp() {
               DEFAULT_EXTERNAL_TIMEOUT_MS,
               `${ticker} 第三方 AI 分析`,
             )
-          : await withTimeout(
-              generateWithModel({
+          : await generateWithModel({
                 model: ANALYSIS_MODEL,
                 messages,
                 customConfig: { temperature: 0.3, max_tokens: 4096 },
-              }),
-              DEFAULT_EXTERNAL_TIMEOUT_MS,
-              `${ticker} AI 分析 (${ANALYSIS_MODEL})`,
-            );
+                primaryTimeoutMs: 75000,
+              });
 
         if (!result.text) {
           throw new Error(`AI 返回空内容`);
@@ -1261,18 +1260,15 @@ export function createApp() {
       ].join('\n');
 
       try {
-        const result = await withTimeout(
-          generateWithModel({
+        const result = await generateWithModel({
             model: SCANNER_MODEL,
             messages: [
               { role: 'system', content: systemMsg },
               { role: 'user', content: userMsg },
             ],
             customConfig: { temperature: 0.2, max_tokens: 4096 },
-          }),
-          DEFAULT_EXTERNAL_TIMEOUT_MS,
-          `扫描 AI 精筛 (${SCANNER_MODEL})`,
-        );
+            primaryTimeoutMs: 75000,
+          });
 
         const parsed = tryParseJsonFragment(result.text);
         if (!Array.isArray(parsed)) {
