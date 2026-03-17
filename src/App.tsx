@@ -1489,8 +1489,13 @@ function App() {
 
       if (!res.ok) {
         const payload = await readApiPayload(res);
-        throw new Error(payload.error || 'AI 分析失败');
-      }
+        if (payload.fallbackAnalysis && typeof payload.fallbackAnalysis === 'string') {
+          setAnalysis(payload.fallbackAnalysis);
+          setAnalysisSource('rules');
+        } else {
+          throw new Error(payload.error || 'AI 分析失败');
+        }
+      } else {
 
       const payload = await readApiPayload(res);
       if (!hasAnalysisPayloadShape(payload)) {
@@ -1503,6 +1508,8 @@ function App() {
       }
       setAnalysis(payload.analysis || '');
       setAnalysisSource(payload.source || null);
+
+      }
     } catch (analysisError: any) {
       setAnalysis(analysisError.message || 'AI 分析失败');
       setAnalysisSource(null);
