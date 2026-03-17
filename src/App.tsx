@@ -1300,7 +1300,7 @@ function App() {
       return;
     }
     setTicker(symbol);
-    runWorkflow(symbol);
+    runWorkflow(symbol, false);
   };
 
   const handleSearch = async (event?: React.FormEvent) => {
@@ -1401,7 +1401,7 @@ function App() {
     }
 
     setTicker(symbolToUse);
-    runWorkflow(symbolToUse);
+    runWorkflow(symbolToUse, false);
   };
 
   const runWorkflow = async (symbol: string, includeAnalysis = true) => {
@@ -3492,7 +3492,7 @@ function App() {
                 disabled={loading || trackingAction != null}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-[18px] border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {loading || trackingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : activeView === 'tracking' ? '加入关注池' : activeView === 'scanner' ? '加入候选池' : '启动分析'}
+                {loading || trackingAction ? <Loader2 className="h-4 w-4 animate-spin" /> : activeView === 'tracking' ? '加入关注池' : activeView === 'scanner' ? '加入候选池' : '加载行情'}
               </button>
             </div>
 
