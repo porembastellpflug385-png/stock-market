@@ -979,17 +979,36 @@ export function createApp() {
 
   app.get("/api/search/:query", async (req, res) => {
     try {
-      const { query } = req.params;
+      let { query } = req.params;
       if (!query || query.trim() === '') {
         return res.json([]);
       }
+
+      // A 股纯数字代码自动补后缀：6/9 开头 → .SS（上海），其他 → .SZ（深圳）
+      const pureDigits = query.trim().match(/^(\d{6})$/);
+      if (pureDigits) {
+        const code = pureDigits[1];
+        const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+        query = `${code}${suffix}`;
+      }
+
       const curatedMatches = findCuratedMatches(query);
-      if (/[\u4e00-\u9fa5]/.test(query) && curatedMatches.length > 0) {
+
+      // 短查询（<= 5 字符）或纯中文且有精确匹配 → 直接返回 curated，不走 Yahoo
+      if (curatedMatches.length > 0 && (query.length <= 5 || /[\u4e00-\u9fa5]/.test(query))) {
         return res.json(curatedMatches);
       }
 
-      const results = await yahooFinance.search(query);
-      const quotes = results.quotes || [];
+      let quotes: any[] = [];
+      try {
+        const results = await yahooFinance.search(query);
+        quotes = results.quotes || [];
+      } catch (searchError: any) {
+        // Yahoo 对短查询或特殊字符可能报 BadRequestError，不阻断流程
+        if (searchError.name !== 'BadRequestError' && !searchError.message?.includes('Invalid Search Query')) {
+          console.warn('Yahoo search error:', searchError.message);
+        }
+      }
       const thirdPartyConfig = extractThirdPartyConfig(req);
 
       if (quotes.length === 0 && /[\u4e00-\u9fa5]/.test(query)) {
@@ -1454,9 +1473,16 @@ export function createApp() {
 
   app.post("/api/tracking/watchlist", async (req, res) => {
     try {
-      const query = String(req.body?.query || req.body?.symbol || '').trim();
+      let query = String(req.body?.query || req.body?.symbol || '').trim();
       if (!query) {
         return res.status(400).json({ error: "Query or symbol is required" });
+      }
+
+      // A 股纯数字代码自动补后缀
+      const pureDigits = query.match(/^(\d{6})$/);
+      if (pureDigits) {
+        const code = pureDigits[1];
+        query = `${code}${code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ'}`;
       }
 
       let symbol = query.toUpperCase();
