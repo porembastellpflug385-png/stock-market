@@ -22,25 +22,37 @@ const kvConfig = {
 const useKV = Boolean(kvConfig.url && kvConfig.token);
 
 const kvGet = async (key: string): Promise<string | null> => {
-  const res = await fetch(`${kvConfig.url}/get/${key}`, {
-    headers: { Authorization: `Bearer ${kvConfig.token}` },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) return null;
-  const json = await res.json();
-  return json?.result ?? null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${kvConfig.url}/get/${key}`, {
+      headers: { Authorization: `Bearer ${kvConfig.token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.result ?? null;
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 const kvSet = async (key: string, value: string): Promise<void> => {
-  await fetch(`${kvConfig.url}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${kvConfig.token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(['SET', key, value]),
-    signal: AbortSignal.timeout(5000),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    await fetch(`${kvConfig.url}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${kvConfig.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(['SET', key, value]),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 };
 
 // ---- Local filesystem fallback ----
