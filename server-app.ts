@@ -478,7 +478,7 @@ const generateWithThirdParty = async ({
 
   let lastError: (Error & { debug?: ThirdPartyDebug }) | null = null;
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= 5; attempt += 1) {
     const response = await fetch(requestUrl, {
       method: 'POST',
       headers: {
@@ -499,12 +499,13 @@ const generateWithThirdParty = async ({
       error.debug = debug;
       lastError = error;
       const modelUnavailable = /model_not_found|does not exist|unsupported/i.test(responseText);
+      const isLoadSaturated = /负载已饱和|upstream_error/i.test(responseText);
       const retryable =
-        !modelUnavailable &&
-        (response.status === 429 || response.status >= 500 || /upstream_error|负载已饱和/i.test(responseText));
-      if (retryable && attempt < 3) {
-        const delayMs = 1500 * attempt;
-        console.warn(`LLM 请求失败 (${response.status})，${delayMs}ms 后重试 (attempt ${attempt}/3)`);
+        (response.status === 429 || response.status >= 500 || isLoadSaturated) &&
+        !(modelUnavailable && !isLoadSaturated); // 真正的 model_not_found 不重试，负载饱和要重试
+      if (retryable && attempt < 5) {
+        const delayMs = 3000 * attempt;
+        console.warn(`LLM 请求失败 (${response.status})，${delayMs / 1000}s 后重试 (attempt ${attempt}/5)`);
         await sleep(delayMs);
         continue;
       }
@@ -1143,9 +1144,12 @@ export function createApp() {
       } catch (error) {
         if (isTransientLlmError(error)) {
           const errMsg = error instanceof Error ? error.message : String(error);
+          const isRateLimit = /429|负载已饱和|upstream_error/i.test(errMsg);
           console.warn(`AI 分析失败 (${ticker}): ${errMsg}`);
           return res.status(503).json({
-            error: `AI 服务暂时不可用：${errMsg}`,
+            error: isRateLimit
+              ? `gpt-5.4 当前负载较高，已重试 5 次仍未成功。请等待 1-2 分钟后重试。`
+              : `AI 服务暂时不可用，请稍后重试。`,
             retryable: true,
             fallbackAnalysis: buildFallbackAnalysis(ticker, bundle, preferences),
             source: 'rules-fallback',
