@@ -4,6 +4,7 @@ import YahooFinance from "yahoo-finance2";
 import {
   evaluateScannerTemplate,
   getScannerUniverse,
+  getScannerUniverseSync,
   scannerTemplates,
   type ScannerMarket,
   type ScannerTemplateId,
@@ -1170,7 +1171,7 @@ export function createApp() {
     res.json({
       templates: scannerTemplates,
       markets: ['US', 'CN', 'HK', 'ETF', 'CRYPTO'],
-      universeSize: getScannerUniverse().length,
+      universeSize: getScannerUniverseSync().length,
     });
   });
 
@@ -1185,7 +1186,7 @@ export function createApp() {
         ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
       );
 
-      const requestedUniverse = getScannerUniverse(markets);
+      const requestedUniverse = await getScannerUniverse(markets);
       const universe = requestedUniverse.slice(0, DEFAULT_SCANNER_UNIVERSE_LIMIT);
       const results = await runWithConcurrency(universe, 4, async (asset) => {
         const bundle = await withTimeout(

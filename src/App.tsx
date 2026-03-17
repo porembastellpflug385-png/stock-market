@@ -905,23 +905,23 @@ const createPdfReport = async ({
     const doc = new jsPDF({ unit: 'pt', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    const marginX = 28;
-    const marginY = 28;
+    const marginX = 36;
+    const marginY = 42;
     const usableWidth = pageWidth - marginX * 2;
     const usableHeight = pageHeight - marginY * 2;
     const imgWidth = usableWidth;
     const imgHeight = (canvas.height * imgWidth) / canvas.width;
-    let heightLeft = imgHeight;
-    let position = marginY;
 
-    doc.addImage(imgData, 'PNG', marginX, position, imgWidth, imgHeight, undefined, 'FAST');
-    heightLeft -= usableHeight;
+    // 第一页
+    let offsetY = 0;
+    doc.addImage(imgData, 'PNG', marginX, marginY - offsetY, imgWidth, imgHeight, undefined, 'FAST');
+    offsetY += usableHeight;
 
-    while (heightLeft > 0) {
+    // 续页：裁切显示，每页保持上下边距
+    while (offsetY < imgHeight) {
       doc.addPage();
-      position = marginY + (heightLeft - imgHeight);
-      doc.addImage(imgData, 'PNG', marginX, position, imgWidth, imgHeight, undefined, 'FAST');
-      heightLeft -= usableHeight;
+      doc.addImage(imgData, 'PNG', marginX, marginY - offsetY, imgWidth, imgHeight, undefined, 'FAST');
+      offsetY += usableHeight;
     }
 
     doc.save(`${ticker.toLowerCase()}-analysis-report.pdf`);
