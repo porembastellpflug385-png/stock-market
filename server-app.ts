@@ -885,7 +885,7 @@ const runTrackingWorkflow = async (
     ...defaultPreferences,
     timeframe: '6mo',
   };
-  const overview = providedState || listTrackingOverview();
+  const overview = providedState || await listTrackingOverview();
   const maxAiAssets = Number(process.env.TRACKING_AI_MAX_ASSETS || 6);
   const prioritizedSymbols = overview.watchlist
     .filter((item) => item.priority > 0 || item.tags.includes('重点'))
@@ -1433,18 +1433,19 @@ export function createApp() {
     }
   });
 
-  app.get("/api/tracking/overview", (_req, res) => {
+  app.get("/api/tracking/overview", async (_req, res) => {
     try {
-      res.json(listTrackingOverview());
+      res.json(await listTrackingOverview());
     } catch (error: any) {
       console.error("Error loading tracking overview:", error);
       res.status(500).json({ error: error.message || "Failed to load tracking overview" });
     }
   });
 
-  app.get("/api/tracking/strategies", (_req, res) => {
+  app.get("/api/tracking/strategies", async (_req, res) => {
     try {
-      res.json(listTrackingOverview().strategies);
+      const overview = await listTrackingOverview();
+      res.json(overview.strategies);
     } catch (error: any) {
       console.error("Error loading strategies:", error);
       res.status(500).json({ error: error.message || "Failed to load strategies" });
@@ -1479,7 +1480,7 @@ export function createApp() {
         }
       }
 
-      const state = addWatchlistAsset({
+      const state = await addWatchlistAsset({
         symbol,
         name,
         tags: Array.isArray(req.body?.tags) ? req.body.tags : [],
@@ -1492,35 +1493,35 @@ export function createApp() {
     }
   });
 
-  app.delete("/api/tracking/watchlist/:symbol", (req, res) => {
+  app.delete("/api/tracking/watchlist/:symbol", async (req, res) => {
     try {
-      res.json(removeWatchlistAsset(req.params.symbol));
+      res.json(await removeWatchlistAsset(req.params.symbol));
     } catch (error: any) {
       console.error("Error removing watchlist asset:", error);
       res.status(500).json({ error: error.message || "Failed to remove asset from watchlist" });
     }
   });
 
-  app.patch("/api/tracking/watchlist/:symbol/tags", (req, res) => {
+  app.patch("/api/tracking/watchlist/:symbol/tags", async (req, res) => {
     try {
       const tag = String(req.body?.tag || '').trim();
       if (!tag) {
         return res.status(400).json({ error: "Tag is required" });
       }
-      res.json(toggleWatchlistTag(req.params.symbol, tag));
+      res.json(await toggleWatchlistTag(req.params.symbol, tag));
     } catch (error: any) {
       console.error("Error toggling watchlist tag:", error);
       res.status(500).json({ error: error.message || "Failed to update watchlist tag" });
     }
   });
 
-  app.patch("/api/tracking/watchlist/:symbol/priority", (req, res) => {
+  app.patch("/api/tracking/watchlist/:symbol/priority", async (req, res) => {
     try {
       const priority = Number(req.body?.priority);
       if (!Number.isFinite(priority)) {
         return res.status(400).json({ error: "Priority must be a number" });
       }
-      res.json(setWatchlistPriority(req.params.symbol, priority));
+      res.json(await setWatchlistPriority(req.params.symbol, priority));
     } catch (error: any) {
       console.error("Error setting watchlist priority:", error);
       res.status(500).json({ error: error.message || "Failed to update watchlist priority" });

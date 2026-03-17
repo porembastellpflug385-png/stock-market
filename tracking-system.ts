@@ -2,6 +2,116 @@ import fs from 'fs';
 import path from 'path';
 import type { AnalysisPacket, IndicatorSnapshot } from './src/lib/market-analysis.js';
 
+/**
+ * Storage backend abstraction.
+ * - Vercel KV (Redis): when KV_REST_API_URL + KV_REST_API_TOKEN are set (Vercel 部署)
+ * - Local filesystem: fallback for本地开发
+ *
+ * Vercel KV setup: https://vercel.com/docs/storage/vercel-kv
+ * 在 Vercel Dashboard → Storage → Create → KV，连接到项目后环境变量自动注入。
+ */
+
+const KV_KEY = 'market-analyzer:tracking-state';
+
+// ---- Vercel KV client (lightweight, no SDK dependency) ----
+
+const kvConfig = {
+  url: process.env.KV_REST_API_URL || '',
+  token: process.env.KV_REST_API_TOKEN || '',
+};
+const useKV = Boolean(kvConfig.url && kvConfig.token);
+
+const kvGet = async (key: string): Promise<string | null> => {
+  const res = await fetch(`${kvConfig.url}/get/${key}`, {
+    headers: { Authorization: `Bearer ${kvConfig.token}` },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  return json?.result ?? null;
+};
+
+const kvSet = async (key: string, value: string): Promise<void> => {
+  await fetch(`${kvConfig.url}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${kvConfig.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(['SET', key, value]),
+    signal: AbortSignal.timeout(5000),
+  });
+};
+
+// ---- Local filesystem fallback ----
+
+const resolveDataDir = () => {
+  const configuredDir = process.env.TRACKING_DATA_DIR?.trim();
+  if (configuredDir) return configuredDir;
+  const cwd = process.cwd();
+  const vercelRuntime = process.env.VERCEL === '1' || cwd.startsWith('/var/task');
+  if (vercelRuntime) return path.join('/tmp', 'market-analyzer-tracking');
+  return path.join(cwd, 'data');
+};
+
+const dataDir = resolveDataDir();
+const dataFile = path.join(dataDir, 'tracking-system.json');
+
+const ensureLocalStore = () => {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+};
+
+const readLocalState = (): TrackingState => {
+  ensureLocalStore();
+  if (!fs.existsSync(dataFile)) return createEmptyState();
+  const raw = fs.readFileSync(dataFile, 'utf8');
+  return normalizeTrackingState(JSON.parse(raw));
+};
+
+const writeLocalState = (state: TrackingState) => {
+  ensureLocalStore();
+  fs.writeFileSync(dataFile, JSON.stringify(state, null, 2), 'utf8');
+};
+
+// ---- Unified async read/write ----
+
+const readState = async (): Promise<TrackingState> => {
+  if (useKV) {
+    try {
+      const raw = await kvGet(KV_KEY);
+      if (raw) {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        return normalizeTrackingState(parsed);
+      }
+    } catch (err) {
+      console.warn('KV read failed, falling back to local:', err instanceof Error ? err.message : err);
+    }
+  }
+  return readLocalState();
+};
+
+const writeState = async (state: TrackingState): Promise<void> => {
+  const json = JSON.stringify(state);
+  if (useKV) {
+    try {
+      await kvSet(KV_KEY, json);
+    } catch (err) {
+      console.warn('KV write failed, falling back to local:', err instanceof Error ? err.message : err);
+      writeLocalState(state);
+    }
+  } else {
+    writeLocalState(state);
+  }
+};
+
+if (useKV) {
+  console.log('💾 Storage: Vercel KV (persistent across deployments)');
+} else {
+  console.log('💾 Storage: Local filesystem (data lost on Vercel cold start)');
+}
+
 export type StrategyId =
   | 'global-value'
   | 'global-growth'
@@ -278,15 +388,15 @@ const inferMarket = (symbol: string) => {
   return 'GLOBAL';
 };
 
-export const listTrackingOverview = () => readState();
+export const listTrackingOverview = async () => readState();
 
-export const addWatchlistAsset = (input: {
+export const addWatchlistAsset = async (input: {
   symbol: string;
   name?: string;
   tags?: string[];
   notes?: string;
 }) => {
-  const state = readState();
+  const state = await readState();
   const symbol = input.symbol.trim().toUpperCase();
   const existing = state.watchlist.find((item) => item.symbol === symbol);
   if (existing) return state;
@@ -301,19 +411,19 @@ export const addWatchlistAsset = (input: {
     notes: input.notes || '',
     addedAt: new Date().toISOString(),
   });
-  writeState(state);
+  await writeState(state);
   return state;
 };
 
-export const removeWatchlistAsset = (symbol: string) => {
-  const state = readState();
+export const removeWatchlistAsset = async (symbol: string) => {
+  const state = await readState();
   state.watchlist = state.watchlist.filter((item) => item.symbol !== symbol.toUpperCase());
-  writeState(state);
+  await writeState(state);
   return state;
 };
 
-export const toggleWatchlistTag = (symbol: string, tag: string) => {
-  const state = readState();
+export const toggleWatchlistTag = async (symbol: string, tag: string) => {
+  const state = await readState();
   const normalizedSymbol = symbol.toUpperCase();
   state.watchlist = state.watchlist.map((item) => {
     if (item.symbol !== normalizedSymbol) return item;
@@ -325,12 +435,12 @@ export const toggleWatchlistTag = (symbol: string, tag: string) => {
       priority: tag === '重点' ? (exists ? 0 : Math.max(1, item.priority || 0)) : item.priority,
     };
   });
-  writeState(state);
+  await writeState(state);
   return state;
 };
 
-export const setWatchlistPriority = (symbol: string, priority: number) => {
-  const state = readState();
+export const setWatchlistPriority = async (symbol: string, priority: number) => {
+  const state = await readState();
   const normalizedSymbol = symbol.toUpperCase();
   const normalizedPriority = Math.max(0, Math.min(3, Math.round(priority)));
 
@@ -348,7 +458,7 @@ export const setWatchlistPriority = (symbol: string, priority: number) => {
     };
   });
 
-  writeState(state);
+  await writeState(state);
   return state;
 };
 
@@ -658,7 +768,7 @@ export const runTrackingCycle = async ({
   fetchAsset,
   generateAnalysis,
 }: RunTrackingCycleOptions) => {
-  const state = initialState ? normalizeTrackingState(initialState) : readState();
+  const state = initialState ? normalizeTrackingState(initialState) : await readState();
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
@@ -736,7 +846,7 @@ export const runTrackingCycle = async ({
   state.generatedReports = state.generatedReports.slice(0, 60);
 
   if (persist) {
-    writeState(state);
+    await writeState(state);
   }
   return state;
 };
