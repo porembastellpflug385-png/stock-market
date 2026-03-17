@@ -480,9 +480,18 @@ export const evaluateScannerTemplate = (
   return null;
 };
 
-export const getScannerUniverse = (markets?: ScannerMarket[]): ScannerUniverseAsset[] => {
-  _ensureDiscovery(); // fire-and-forget, non-blocking
+/** Await this before getScannerUniverse to ensure discovery data is loaded (for Serverless) */
+export const ensureDiscoveryReady = async (): Promise<void> => {
+  if (Date.now() - _discoveryFetchedAt > DISCOVERY_TTL) {
+    try {
+      await _refreshDiscovery();
+    } catch (err) {
+      console.warn('Discovery refresh failed:', err instanceof Error ? err.message : err);
+    }
+  }
+};
 
+export const getScannerUniverse = (markets?: ScannerMarket[]): ScannerUniverseAsset[] => {
   // Merge core + discovered, deduplicate by symbol
   const seen = new Set<string>();
   const merged: ScannerUniverseAsset[] = [];

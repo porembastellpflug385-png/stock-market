@@ -4,6 +4,7 @@ import YahooFinance from "yahoo-finance2";
 import {
   evaluateScannerTemplate,
   getScannerUniverse,
+  ensureDiscoveryReady,
   scannerTemplates,
   type ScannerMarket,
   type ScannerTemplateId,
@@ -523,9 +524,14 @@ const generateWithThirdParty = async ({
 
     const text = getTextFromLlmResponse(payload, mode);
     if (!text) {
-      const error = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
-      error.debug = debug;
-      throw error;
+      lastError = new Error('Third-party LLM returned empty content') as Error & { debug?: ThirdPartyDebug };
+      (lastError as any).debug = debug;
+      if (attempt < 5) {
+        console.warn(`LLM 返回空内容，2s 后重试 (attempt ${attempt}/5)`);
+        await sleep(2000);
+        continue;
+      }
+      throw lastError;
     }
     return { text, debug };
   }
@@ -1188,7 +1194,8 @@ export function createApp() {
     }
   });
 
-  app.get("/api/scanner/templates", (_req, res) => {
+  app.get("/api/scanner/templates", async (_req, res) => {
+    await ensureDiscoveryReady();
     res.json({
       templates: scannerTemplates,
       markets: ['US', 'CN', 'HK', 'ETF', 'CRYPTO'],
@@ -1207,6 +1214,8 @@ export function createApp() {
         ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
       );
 
+      // Await dynamic discovery refresh (cached 10min, ~2-5s on cold start)
+      await ensureDiscoveryReady();
       const requestedUniverse = getScannerUniverse(markets);
       const universe = requestedUniverse.slice(0, DEFAULT_SCANNER_UNIVERSE_LIMIT);
       const results = await runWithConcurrency(universe, 4, async (asset) => {
