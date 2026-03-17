@@ -33,20 +33,38 @@ const API_CONFIG = {
   baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
 };
 
-/** 'chat-completions' = /v1/chat/completions（默认）；'responses' = /v1/responses */
+/**
+ * API 端点模式：
+ * - 'chat-completions'（默认）→ POST /v1/chat/completions，请求体 { model, messages }
+ * - 'responses' → POST /v1/responses，请求体 { model, input, instructions }
+ *
+ * 绝大多数 OpenAI 兼容代理（包括 ai.scd666.com）只支持 chat-completions。
+ * 仅当你确认代理支持 Responses API 时才设为 'responses'。
+ */
 type ApiEndpointMode = 'chat-completions' | 'responses';
 const API_ENDPOINT_MODE: ApiEndpointMode =
-  (process.env.OPENAI_API_ENDPOINT || '').toLowerCase().includes('response')
+  (process.env.OPENAI_API_ENDPOINT || '').toLowerCase() === 'responses'
     ? 'responses'
     : 'chat-completions';
 
 const TEXT_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 const IMAGE_MODEL = process.env.IMAGE_MODEL || 'gpt-4o';
 const VERIFIED_TEXT_MODEL = process.env.VERIFIED_TEXT_MODEL || TEXT_MODEL;
+
+/**
+ * 场景化模型分配：
+ * - ANALYSIS_MODEL:  单次股票分析（/api/analyze），用最强模型，不怕慢
+ * - TRACKING_MODEL:  日报/周报/月报（/api/tracking/run），要快，受 Vercel 时间限制
+ * - SCANNER_MODEL:   扫描精筛（/api/scanner/refine），输出 JSON，要准
+ */
+const ANALYSIS_MODEL = process.env.ANALYSIS_MODEL || TEXT_MODEL;
+const TRACKING_MODEL = process.env.TRACKING_MODEL || VERIFIED_TEXT_MODEL;
+const SCANNER_MODEL = process.env.SCANNER_MODEL || TEXT_MODEL;
+
 const DEFAULT_TEXT_MODEL_FALLBACKS = Array.from(
   new Set([VERIFIED_TEXT_MODEL, TEXT_MODEL].filter(Boolean)),
 );
-const DEFAULT_EXTERNAL_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 50000;
+const DEFAULT_EXTERNAL_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 80000;
 const DEFAULT_SCANNER_UNIVERSE_LIMIT = Number(process.env.SCANNER_UNIVERSE_LIMIT) || (process.env.VERCEL === '1' ? 35 : 60);
 
 const defaultServerProvider = {
@@ -60,7 +78,8 @@ if (!API_CONFIG.key) {
     '⚠️  OPENAI_API_KEY 未设置，所有 AI 分析功能将不可用。请在 .env 或环境变量中配置。',
   );
 }
-console.log(`🔧 LLM endpoint mode: ${API_ENDPOINT_MODE}, model: ${TEXT_MODEL}, fallback: ${VERIFIED_TEXT_MODEL}, timeout: ${DEFAULT_EXTERNAL_TIMEOUT_MS}ms`);
+console.log(`🔧 LLM config → endpoint: ${API_ENDPOINT_MODE}, baseUrl: ${API_CONFIG.baseUrl}`);
+console.log(`   单次分析: ${ANALYSIS_MODEL}, 日报/周报: ${TRACKING_MODEL}, 扫描精筛: ${SCANNER_MODEL}, 超时: ${DEFAULT_EXTERNAL_TIMEOUT_MS}ms`);
 
 type FallbackQuote = {
   symbol: string;
@@ -554,6 +573,55 @@ const generateWithDefaultProvider = async ({
   throw lastError || new Error('No default LLM models available');
 };
 
+/**
+ * 指定模型调用，失败后按 fallback 链兜底。
+ * 用于场景化模型分配：单次分析用 gpt-5.4，日报用 claude 等。
+ */
+const generateWithModel = async ({
+  model,
+  messages,
+  customConfig,
+}: {
+  model: string;
+  messages: ThirdPartyMessage[];
+  customConfig?: Record<string, unknown>;
+}) => {
+  if (!defaultServerProvider.apiKey) {
+    throw new Error('OPENAI_API_KEY 未配置，无法调用 AI 服务。');
+  }
+
+  // 先用指定模型
+  try {
+    const result = await generateWithThirdParty({
+      messages,
+      config: { ...defaultServerProvider, model },
+      customConfig,
+    });
+    return { ...result, modelUsed: model };
+  } catch (primaryError) {
+    // 指定模型失败，尝试 fallback 链中的其他模型
+    const fallbacks = DEFAULT_TEXT_MODEL_FALLBACKS.filter((m) => m !== model);
+    if (fallbacks.length === 0) throw primaryError;
+
+    console.warn(`指定模型 ${model} 失败（${primaryError instanceof Error ? primaryError.message.slice(0, 100) : 'unknown'}），尝试 fallback: ${fallbacks.join(', ')}`);
+
+    for (const fallbackModel of fallbacks) {
+      try {
+        const result = await generateWithThirdParty({
+          messages,
+          config: { ...defaultServerProvider, model: fallbackModel },
+          customConfig,
+        });
+        return { ...result, modelUsed: fallbackModel };
+      } catch (fallbackError) {
+        console.warn(`Fallback 模型 ${fallbackModel} 也失败`);
+        continue;
+      }
+    }
+    throw primaryError;
+  }
+};
+
 const maskModelLabel = (config: ThirdPartyLLMConfig) =>
   `${config.model} @ ${normalizeChatCompletionsUrl(config.baseUrl)}`;
 
@@ -783,6 +851,7 @@ const buildPrompt = (ticker: string, bundle: AnalysisBundleLike, preferences: An
   return msgs.map((m) => m.content).join('\n\n');
 };
 
+/** 单次股票分析 — 使用 ANALYSIS_MODEL（默认 gpt-5.4），不怕慢，追求质量 */
 const generateInstitutionalAnalysis = async (
   ticker: string,
   bundle: AnalysisBundleLike,
@@ -790,12 +859,13 @@ const generateInstitutionalAnalysis = async (
 ) => {
   const messages = buildPromptMessages(ticker, bundle, preferences);
   const result = await withTimeout(
-    generateWithDefaultProvider({
+    generateWithModel({
+      model: ANALYSIS_MODEL,
       messages,
       customConfig: { temperature: 0.3, max_tokens: 4096 },
     }),
     DEFAULT_EXTERNAL_TIMEOUT_MS,
-    `${ticker} AI 分析`,
+    `${ticker} AI 分析 (${ANALYSIS_MODEL})`,
   );
   if (!result.text) {
     throw new Error(`${ticker} AI 分析返回空内容（模型: ${result.modelUsed}）`);
@@ -849,23 +919,26 @@ const runTrackingWorkflow = async (
       if (!prioritizedSet.has(symbol)) {
         return buildFallbackAnalysis(symbol, bundle, preferences);
       }
-      // 优先使用 AI，失败后重试一次，仍失败则抛出错误（不静默降级）
+      // 日报/周报/月报 — 使用 TRACKING_MODEL（默认 claude-opus-4-6），快速出结果
       try {
-        return await generateInstitutionalAnalysis(symbol, bundle, preferences);
-      } catch (firstError) {
-        console.warn(`${symbol} AI 分析首次失败，2s 后重试...`, firstError instanceof Error ? firstError.message : firstError);
-        await sleep(2000);
-        try {
-          return await generateInstitutionalAnalysis(symbol, bundle, preferences);
-        } catch (retryError) {
-          console.error(`${symbol} AI 分析重试仍失败，使用规则分析作为临时替代`, retryError instanceof Error ? retryError.message : retryError);
-          // 仅在两次都失败后才用规则分析，并在文本中明确标注
-          return [
-            `> ⚠️ 注意：${symbol} 的 AI 分析连续两次请求失败，以下为基于技术指标的规则化分析，非大模型生成。`,
-            '',
-            buildFallbackAnalysis(symbol, bundle, preferences),
-          ].join('\n');
+        const messages = buildPromptMessages(symbol, bundle, preferences);
+        const result = await generateWithModel({
+          model: TRACKING_MODEL,
+          messages,
+          customConfig: { temperature: 0.3, max_tokens: 2048 },
+        });
+        if (!result.text) {
+          throw new Error(`${symbol} AI 返回空内容`);
         }
+        return result.text;
+      } catch (error) {
+        const errMsg = error instanceof Error ? error.message : String(error);
+        console.warn(`${symbol} AI 分析失败 (${TRACKING_MODEL}): ${errMsg}，使用规则分析替代`);
+        return [
+          `> ⚠️ ${symbol} 的 AI 分析请求失败（${errMsg.slice(0, 80)}），以下为规则化分析。`,
+          '',
+          buildFallbackAnalysis(symbol, bundle, preferences),
+        ].join('\n');
       }
     },
   });
@@ -1031,12 +1104,13 @@ export function createApp() {
               `${ticker} 第三方 AI 分析`,
             )
           : await withTimeout(
-              generateWithDefaultProvider({
+              generateWithModel({
+                model: ANALYSIS_MODEL,
                 messages,
                 customConfig: { temperature: 0.3, max_tokens: 4096 },
               }),
               DEFAULT_EXTERNAL_TIMEOUT_MS,
-              `${ticker} 默认 AI 分析`,
+              `${ticker} AI 分析 (${ANALYSIS_MODEL})`,
             );
 
         if (!result.text) {
@@ -1169,7 +1243,8 @@ export function createApp() {
 
       try {
         const result = await withTimeout(
-          generateWithDefaultProvider({
+          generateWithModel({
+            model: SCANNER_MODEL,
             messages: [
               { role: 'system', content: systemMsg },
               { role: 'user', content: userMsg },
@@ -1177,7 +1252,7 @@ export function createApp() {
             customConfig: { temperature: 0.2, max_tokens: 4096 },
           }),
           DEFAULT_EXTERNAL_TIMEOUT_MS,
-          '扫描 AI 精筛',
+          `扫描 AI 精筛 (${SCANNER_MODEL})`,
         );
 
         const parsed = tryParseJsonFragment(result.text);

@@ -613,9 +613,10 @@ export const runTrackingCycle = async ({
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
-  const fetchTimeoutMs = Number(process.env.TRACKING_FETCH_TIMEOUT_MS) || 25000;
-  const analysisTimeoutMs = Number(process.env.TRACKING_ANALYSIS_TIMEOUT_MS) || 55000;
-  const concurrency = Number(process.env.TRACKING_CONCURRENCY) || 2;
+  const isVercel = process.env.VERCEL === '1';
+  const fetchTimeoutMs = Number(process.env.TRACKING_FETCH_TIMEOUT_MS) || (isVercel ? 10000 : 25000);
+  const analysisTimeoutMs = Number(process.env.TRACKING_ANALYSIS_TIMEOUT_MS) || (isVercel ? 35000 : 80000);
+  const concurrency = Number(process.env.TRACKING_CONCURRENCY) || (isVercel ? 3 : 2);
 
   const settledReports = await runWithConcurrency(state.watchlist, concurrency, async (asset) => {
     const bundle = await withTimeout(fetchAsset(asset.symbol), fetchTimeoutMs, `${asset.symbol} 行情抓取`);
