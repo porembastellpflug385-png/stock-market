@@ -868,7 +868,7 @@ const generateInstitutionalAnalysis = async (
     model: ANALYSIS_MODEL,
     messages,
     customConfig: { temperature: 0.3, max_tokens: 4096 },
-    primaryTimeoutMs: 75000,
+    primaryTimeoutMs: 110000,
   });
   if (!result.text) {
     throw new Error(`${ticker} AI 分析返回空内容（模型: ${result.modelUsed}）`);
@@ -1129,7 +1129,7 @@ export function createApp() {
                 model: ANALYSIS_MODEL,
                 messages,
                 customConfig: { temperature: 0.3, max_tokens: 4096 },
-                primaryTimeoutMs: 75000,
+                primaryTimeoutMs: 110000,
               });
 
         if (!result.text) {
@@ -1271,7 +1271,7 @@ export function createApp() {
               { role: 'user', content: userMsg },
             ],
             customConfig: { temperature: 0.2, max_tokens: 4096 },
-            primaryTimeoutMs: 75000,
+            primaryTimeoutMs: 110000,
           });
 
         const parsed = tryParseJsonFragment(result.text);
