@@ -1270,6 +1270,7 @@ export function createApp() {
         scanned: universe.length,
         requestedScanned: requestedUniverse.length,
         candidates,
+        scannedUniverse: universe.map((a) => ({ symbol: a.symbol, name: a.name, market: a.market, assetClass: a.assetClass })),
       });
     } catch (error: any) {
       console.error("Error running scanner:", error);

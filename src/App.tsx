@@ -5,6 +5,7 @@ import {
   Activity,
   AlertCircle,
   BrainCircuit,
+  ChevronDown,
   FileText,
   Gauge,
   Loader2,
@@ -362,7 +363,7 @@ const trackingStrategies = [
   },
 ] as const;
 const trackingAiMaxAssets = 6;
-const scannerRunLimit = 24;
+const scannerRunLimit = 40;
 const scannerRefineLimit = 12;
 const scannerHighQualityLimit = 6;
 const scannerMarketOptions: Array<{ value: ScannerMarket; label: string }> = [
@@ -1057,6 +1058,8 @@ function App() {
   const [scannerError, setScannerError] = useState<string | null>(null);
   const [scannerResults, setScannerResults] = useState<ScannerCandidate[]>([]);
   const [scannerScanned, setScannerScanned] = useState(0);
+  const [scannedUniverse, setScannedUniverse] = useState<Array<{ symbol: string; name: string; market: string; assetClass: string }>>([]);
+  const [showUniversePanel, setShowUniversePanel] = useState(false);
   const [scannerRefineLoading, setScannerRefineLoading] = useState(false);
   const [scannerRefinements, setScannerRefinements] = useState<ScannerRefinement[]>([]);
   const [scannerSnapshots, setScannerSnapshots] = useState<ScannerSnapshot[]>([]);
@@ -1594,6 +1597,7 @@ function App() {
       }
       setScannerResults(Array.isArray(payload.candidates) ? payload.candidates : []);
       setScannerScanned(Number(payload.scanned || 0));
+      setScannedUniverse(Array.isArray(payload.scannedUniverse) ? payload.scannedUniverse : []);
       setScannerRefinements([]);
       if (payload.requestedScanned && payload.requestedScanned > payload.scanned) {
         setScannerError(`为避免部署超时，本次线上扫描已从 ${payload.requestedScanned} 只候选中限流执行 ${payload.scanned} 只。`);
@@ -2218,15 +2222,44 @@ function App() {
           <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Scanner Workspace</p>
           <h2 className="mt-2 text-3xl font-black tracking-tight text-slate-50">市场扫描工作台</h2>
           <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-            规则层先全量扫市场池，再让 AI 只看前 24 名候选，最后收敛成前 8 个高质量机会。这样既保留覆盖面，也把 token 花在最值得复核的地方。
+            规则层先全量扫市场池，再让 AI 只看前 12 名候选，最后收敛成前 8 个高质量机会。这样既保留覆盖面，也把 token 花在最值得复核的地方。
           </p>
           <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <InfoCard title="规则候选" value={`${scannerResults.length} 只`} subtitle="规则全量扫后的前排结果" icon={<Search className="h-4 w-4" />} />
-            <InfoCard title="AI 复核" value={`${scannerRefinements.length} 只`} subtitle="只处理前 24 名候选" icon={<BrainCircuit className="h-4 w-4" />} />
+            <InfoCard title="AI 复核" value={`${scannerRefinements.length} 只`} subtitle="只处理前 12 名候选" icon={<BrainCircuit className="h-4 w-4" />} />
             <InfoCard title="高质量候选" value={`${scannerHighQualityCandidates.length} 只`} subtitle="最终聚焦前 5-10 个机会" icon={<TrendingUp className="h-4 w-4" />} />
             <InfoCard title="候选池" value={`${sortedCandidatePool.length} 只`} subtitle="留给后续观察和升级" icon={<FileText className="h-4 w-4" />} />
           </div>
         </div>
+
+        {scannedUniverse.length > 0 && (
+          <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+            <button type="button" onClick={() => setShowUniversePanel(!showUniversePanel)} className="flex w-full items-center justify-between text-left">
+              <div>
+                <div className="text-sm font-semibold text-slate-200">扫描池全览</div>
+                <div className="mt-1 text-xs text-slate-500">本次实际扫描 {scannedUniverse.length} 只标的（核心池 + 动态发现），点击展开查看完整清单</div>
+              </div>
+              <ChevronDown className={`h-4 w-4 text-slate-400 transition ${showUniversePanel ? 'rotate-180' : ''}`} />
+            </button>
+            {showUniversePanel && (
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                {scannedUniverse.map((asset) => {
+                  const scored = scannerResults.find((r) => r.symbol === asset.symbol);
+                  return (
+                    <div key={`uni-${asset.symbol}`} className="rounded-xl border border-white/6 bg-slate-950/40 px-3 py-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-200">{asset.symbol}</span>
+                        {scored && <span className={`text-[10px] font-semibold ${scored.opportunityScore >= 70 ? 'text-emerald-400' : scored.opportunityScore >= 50 ? 'text-amber-400' : 'text-slate-500'}`}>{scored.opportunityScore}</span>}
+                      </div>
+                      <div className="mt-0.5 truncate text-[10px] text-slate-500">{asset.name}</div>
+                      <div className="mt-0.5 text-[10px] text-slate-600">{asset.market} · {asset.assetClass}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.98))] p-6 text-white shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
           <div className="flex items-center justify-between">
@@ -2255,7 +2288,7 @@ function App() {
             </button>
           </div>
           <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">
-            当前规则层返回前 40 名候选；AI 只看前 24 名，再压缩出前 8 个更值得你直接处理的标的。
+            当前规则层返回前 40 名候选；AI 只看前 12 名，再压缩出前 8 个更值得你直接处理的标的。
             <div className="mt-2 text-xs text-slate-400">
               规则扫描不烧 token，只有“AI 精筛前 ${scannerRefineLimit} 名”会调用文本模型。
               若默认模型不可用，系统会自动切换到可用的文本模型继续精筛。
@@ -2393,10 +2426,10 @@ function App() {
       <section className="mt-8 grid gap-8 xl:grid-cols-[1fr_1fr]">
         <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
           <div className="text-sm font-semibold text-slate-200">规则候选榜单</div>
-          <div className="mt-1 text-xs text-slate-500">全量规则扫描后的前排候选，适合人工再看一轮。</div>
+          <div className="mt-1 text-xs text-slate-500">全量规则扫描后的前排候选，适合人工再看一轮。共 {scannerResults.length} 只</div>
           {scannerResults.length > 0 ? (
             <div className="mt-4 space-y-3">
-              {scannerResults.slice(0, 12).map((candidate) => {
+              {scannerResults.map((candidate) => {
                 const refinement = refinementBySymbol.get(candidate.symbol);
                 return (
                   <div key={`scanner-result-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-slate-950/30 p-4">
