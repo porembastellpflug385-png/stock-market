@@ -66,7 +66,7 @@ const DEFAULT_TEXT_MODEL_FALLBACKS = Array.from(
   new Set([VERIFIED_TEXT_MODEL, TEXT_MODEL].filter(Boolean)),
 );
 const DEFAULT_EXTERNAL_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS) || 80000;
-const DEFAULT_SCANNER_UNIVERSE_LIMIT = Number(process.env.SCANNER_UNIVERSE_LIMIT) || (process.env.VERCEL === '1' ? 35 : 60);
+const DEFAULT_SCANNER_UNIVERSE_LIMIT = Number(process.env.SCANNER_UNIVERSE_LIMIT) || (process.env.VERCEL === '1' ? 80 : 120);
 
 const defaultServerProvider = {
   baseUrl: API_CONFIG.baseUrl,
@@ -1217,11 +1217,40 @@ export function createApp() {
       // Await dynamic discovery refresh (cached 10min, ~2-5s on cold start)
       await ensureDiscoveryReady();
       const requestedUniverse = getScannerUniverse(markets);
-      const universe = requestedUniverse.slice(0, DEFAULT_SCANNER_UNIVERSE_LIMIT);
-      const results = await runWithConcurrency(universe, 4, async (asset) => {
+
+      // Market-balanced sampling: distribute slots evenly across markets, then fill remaining
+      const maxAssets = Math.min(requestedUniverse.length, DEFAULT_SCANNER_UNIVERSE_LIMIT);
+      let universe: typeof requestedUniverse;
+      if (markets.length > 0) {
+        // User selected specific markets — just take the first maxAssets
+        universe = requestedUniverse.slice(0, maxAssets);
+      } else {
+        // No market filter — balanced sampling across all markets
+        const byMarket = new Map<string, typeof requestedUniverse>();
+        for (const a of requestedUniverse) {
+          const arr = byMarket.get(a.market) || [];
+          arr.push(a);
+          byMarket.set(a.market, arr);
+        }
+        const marketKeys = [...byMarket.keys()]; // e.g. ['US','CN','HK','ETF','CRYPTO']
+        const perMarket = Math.max(8, Math.floor(maxAssets / marketKeys.length));
+        const sampled: typeof requestedUniverse = [];
+        for (const key of marketKeys) {
+          sampled.push(...(byMarket.get(key) || []).slice(0, perMarket));
+        }
+        // Fill remaining slots from any market
+        const inSet = new Set(sampled.map((a) => a.symbol));
+        for (const a of requestedUniverse) {
+          if (sampled.length >= maxAssets) break;
+          if (!inSet.has(a.symbol)) { sampled.push(a); inSet.add(a.symbol); }
+        }
+        universe = sampled.slice(0, maxAssets);
+      }
+
+      const results = await runWithConcurrency(universe, 6, async (asset) => {
         const bundle = await withTimeout(
           fetchMarketBundle(asset.symbol, '6mo'),
-          10000,
+          6000,
           `${asset.symbol} 扫描行情`,
         );
         return evaluateScannerTemplate(templateId, asset, bundle.packet, {
