@@ -387,6 +387,18 @@ const formatCompact = (num?: number | null) => {
   return formatNumber(num);
 };
 
+const formatDateTime = (value?: string | null) => {
+  if (!value) return '未运行';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '未运行';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 const metricTone = (score: number) =>
   score >= 75 ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300' :
   score >= 60 ? 'border-sky-400/20 bg-sky-400/10 text-sky-300' :
@@ -564,6 +576,19 @@ const compactTrackingOverviewForRun = (overview: TrackingOverview) => ({
   })),
   validations: (overview.validations || []).slice(0, 80),
   generatedReports: [],
+});
+
+const compactTrackingOverviewForFastRun = (overview: TrackingOverview) => ({
+  watchlist: (overview.watchlist || []).map((item) => ({
+    symbol: item.symbol,
+    name: item.name,
+    market: item.market,
+    assetClass: item.assetClass,
+    tags: item.tags,
+    priority: item.priority,
+    notes: item.notes,
+    addedAt: item.addedAt,
+  })),
 });
 
 const readStoredCandidatePool = (): CandidatePoolItem[] => {
@@ -1868,8 +1893,12 @@ function App() {
     return lines.join('\n');
   };
 
-  const runTrackingScope = async (scope: 'daily' | 'weekly' | 'monthly') => {
-    setTrackingAction(scope);
+  const runTrackingScope = async (
+    scope: 'daily' | 'weekly' | 'monthly',
+    mode: 'fast' | 'full' = 'fast',
+  ) => {
+    const actionKey = mode === 'full' ? `full-${scope}` : scope;
+    setTrackingAction(actionKey);
     setTrackingError(null);
     setTrackingStatus(null);
     try {
@@ -1877,12 +1906,15 @@ function App() {
       if ((currentOverview.watchlist?.length || 0) === 0) {
         throw new Error(`请先加入至少一个关注标的，再生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}。`);
       }
-      const compactOverview = compactTrackingOverviewForRun(currentOverview);
+      const compactOverview =
+        mode === 'full'
+          ? compactTrackingOverviewForRun(currentOverview)
+          : compactTrackingOverviewForFastRun(currentOverview);
 
       const res = await fetch('/api/tracking/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scope, mode: 'fast', state: compactOverview }),
+        body: JSON.stringify({ scope, mode, state: compactOverview }),
       });
       const payload = await readApiPayload(res);
       if (!res.ok) {
@@ -1910,7 +1942,11 @@ function App() {
         ];
       }
       commitTrackingOverview(overview);
-      setTrackingStatus(`已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`);
+      setTrackingStatus(
+        mode === 'full'
+          ? `已完成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}完整运行，模拟盘与报告已同步更新。`
+          : `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`,
+      );
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {
@@ -2537,6 +2573,14 @@ function App() {
             ))}
             <button
               type="button"
+              onClick={() => runTrackingScope('daily', 'full')}
+              disabled={trackingAction != null || watchlist.length === 0}
+              className="rounded-2xl border border-emerald-300/20 bg-emerald-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {trackingAction === 'full-daily' ? '完整运行中...' : '更新模拟盘（完整）'}
+            </button>
+            <button
+              type="button"
               onClick={loadTrackingOverview}
               disabled={trackingLoading}
               className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2549,6 +2593,9 @@ function App() {
             全球价值基金风格、全球成长基金风格、宏观对冲风格、幻方量化风格、ETF 轮动风格。
             <div className="mt-2 text-xs text-slate-400">
               当前只有打上“重点”标签的标的会调用 AI；其余标的只做规则分析和验证，用来控制 API key 消耗。
+            </div>
+            <div className="mt-2 text-xs text-slate-400">
+              “生成日报/周报/月报”默认走快速模式，优先稳定出报告；“更新模拟盘（完整）”会额外驱动 5 个策略组合调仓与净值更新。
             </div>
           </div>
           <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -3390,9 +3437,27 @@ function App() {
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               {trackingTopPortfolios.map((portfolio) => {
                 const latest = portfolio.history[0];
+                const activated = Boolean(portfolio.lastRebalancedAt || portfolio.trades.length || portfolio.positions.length || portfolio.history.length);
+                const recentTrades = portfolio.trades.slice(0, 2);
                 return (
                   <div key={portfolio.strategyId} className="rounded-[26px] border border-white/8 bg-white/4 p-4">
-                    <div className="text-sm text-slate-500">{portfolio.strategyName}</div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm text-slate-500">{portfolio.strategyName}</div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${activated ? 'border border-emerald-400/20 bg-emerald-400/10 text-emerald-300' : 'border border-amber-300/20 bg-amber-300/10 text-amber-200'}`}>
+                            {activated ? '已激活' : '待激活'}
+                          </span>
+                          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] font-semibold text-slate-400">
+                            调仓 {formatDateTime(portfolio.lastRebalancedAt)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right text-xs text-slate-500">
+                        <div>累计交易 {portfolio.trades.length} 笔</div>
+                        <div className="mt-1">净值记录 {portfolio.history.length} 条</div>
+                      </div>
+                    </div>
                     <div className="mt-2 text-2xl font-black text-slate-50">{formatCompact(latest?.equity ?? portfolio.initialCash)}</div>
                     <div className="mt-2 text-sm text-slate-400">现金 {formatCompact(latest?.cash ?? portfolio.cash)} · 持仓 {portfolio.positions.length} 只</div>
                     <div className="mt-3 space-y-2">
@@ -3402,6 +3467,30 @@ function App() {
                           <span>{formatNumber(position.weight)}%</span>
                         </div>
                       ))}
+                      {portfolio.positions.length === 0 && (
+                        <div className="rounded-2xl border border-dashed border-white/10 bg-white/3 px-3 py-3 text-xs text-slate-500">
+                          还没有持仓。运行一次“更新模拟盘（完整）”后，这里会显示该策略的目标仓位。
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-3 rounded-2xl border border-white/8 bg-slate-950/30 p-3">
+                      <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">最近动作</div>
+                      {recentTrades.length > 0 ? (
+                        <div className="mt-2 space-y-2">
+                          {recentTrades.map((trade) => (
+                            <div key={trade.id} className="flex items-center justify-between text-xs text-slate-300">
+                              <span>
+                                {trade.side === 'buy' ? '买入' : '卖出'} {trade.symbol}
+                              </span>
+                              <span className="text-slate-500">
+                                {formatDateTime(trade.executedAt)} · {formatNumber(trade.quantity, 0)} 股
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-xs text-slate-500">暂无交易记录。</div>
+                      )}
                     </div>
                   </div>
                 );
