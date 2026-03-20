@@ -907,7 +907,7 @@ const runTrackingWorkflow = async (
     trigger,
     mode,
     initialState: overview,
-    persist: !providedState,
+    persist: !providedState || mode === 'full' || trigger === 'cron',
     fetchAsset: async (symbol) => {
       const bundle = await fetchMarketBundle(symbol, preferences.timeframe);
       return {
@@ -1613,6 +1613,17 @@ export function createApp() {
       const rawScope = String(req.params.scope || 'daily');
       const scope: ReportScope =
         rawScope === 'weekly' || rawScope === 'monthly' ? rawScope : 'daily';
+
+      const overview = listTrackingOverview();
+      if (overview.settings?.executionMode === 'manual') {
+        return res.json({
+          ok: true,
+          skipped: true,
+          reason: 'tracking execution mode is manual',
+          scope,
+          generatedAt: new Date().toISOString(),
+        });
+      }
 
       const state = await runTrackingWorkflow(scope, 'cron');
       res.json({

@@ -132,6 +132,20 @@ type GeneratedReport = {
   trigger?: 'manual' | 'cron';
 };
 
+type TrackingRunLog = {
+  id: string;
+  scope: 'daily' | 'weekly' | 'monthly';
+  mode: 'fast' | 'full';
+  executedAt: string;
+  changedStrategies: string[];
+  newTrades: number;
+  summary: string;
+};
+
+type TrackingSettings = {
+  executionMode: 'daily' | 'manual';
+};
+
 type TrackingOverview = {
   watchlist: TrackingAsset[];
   portfolios: StrategyPortfolio[];
@@ -139,6 +153,8 @@ type TrackingOverview = {
   validations: ValidationRecord[];
   generatedReports: GeneratedReport[];
   strategies: Array<{ id: string; name: string; description: string; objective: string }>;
+  settings: TrackingSettings;
+  runLogs: TrackingRunLog[];
 };
 
 type ScannerTemplateId =
@@ -473,6 +489,10 @@ const createEmptyTrackingOverview = (): TrackingOverview => ({
   latestReports: [],
   validations: [],
   generatedReports: [],
+  settings: {
+    executionMode: 'daily',
+  },
+  runLogs: [],
 });
 
 const normalizeTrackingOverview = (payload: Partial<TrackingOverview> | null | undefined): TrackingOverview => {
@@ -485,6 +505,10 @@ const normalizeTrackingOverview = (payload: Partial<TrackingOverview> | null | u
     latestReports: Array.isArray(payload.latestReports) ? payload.latestReports : [],
     validations: Array.isArray(payload.validations) ? payload.validations : [],
     generatedReports: Array.isArray(payload.generatedReports) ? payload.generatedReports : [],
+    settings: {
+      executionMode: payload.settings?.executionMode === 'manual' ? 'manual' : 'daily',
+    },
+    runLogs: Array.isArray(payload.runLogs) ? payload.runLogs.slice(0, 30) : [],
   };
 };
 
@@ -576,6 +600,7 @@ const compactTrackingOverviewForRun = (overview: TrackingOverview) => ({
   })),
   validations: (overview.validations || []).slice(0, 80),
   generatedReports: [],
+  settings: overview.settings,
 });
 
 const compactTrackingOverviewForFastRun = (overview: TrackingOverview) => ({
@@ -589,6 +614,7 @@ const compactTrackingOverviewForFastRun = (overview: TrackingOverview) => ({
     notes: item.notes,
     addedAt: item.addedAt,
   })),
+  settings: overview.settings,
 });
 
 const readStoredCandidatePool = (): CandidatePoolItem[] => {
@@ -1092,6 +1118,7 @@ function App() {
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
   const [scannerValidatedSnapshots, setScannerValidatedSnapshots] = useState<ScannerValidatedSnapshot[]>([]);
   const [scannerValidationSummary, setScannerValidationSummary] = useState<ScannerValidationSummary | null>(null);
+  const [expandedStrategyIds, setExpandedStrategyIds] = useState<string[]>([]);
 
   const [preferences, setPreferences] = useState<AnalysisPreferences>(defaultPreferences);
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -1871,6 +1898,30 @@ function App() {
     persistCandidatePool(nextPool);
   };
 
+  const toggleStrategyExpansion = (strategyId: string) => {
+    setExpandedStrategyIds((current) =>
+      current.includes(strategyId)
+        ? current.filter((item) => item !== strategyId)
+        : [...current, strategyId],
+    );
+  };
+
+  const setTrackingExecutionMode = (executionMode: 'daily' | 'manual') => {
+    const current = getLatestTrackingOverview();
+    commitTrackingOverview({
+      ...current,
+      settings: {
+        executionMode,
+      },
+    });
+    setTrackingStatus(
+      executionMode === 'daily'
+        ? '已切换为日频模式。若 Vercel cron 已配置，系统会每天自动跑一轮完整更新。'
+        : '已切换为手动频率。模拟盘只会在你手动点击“更新模拟盘（完整）”时推进。',
+    );
+    setTrackingError(null);
+  };
+
   const buildScannerDigest = () => {
     const latestSnapshot = scannerSnapshots[0];
     const activeCandidates = candidatePool.filter((item) => item.status !== 'dismissed');
@@ -1941,12 +1992,44 @@ function App() {
           ...restReports,
         ];
       }
+      let nextStatus = '';
+      if (mode === 'full') {
+        const previousPortfolios = currentOverview.portfolios || [];
+        const nextPortfolios = overview.portfolios || [];
+        const changedPortfolios = nextPortfolios.filter((portfolio) => {
+          const previous = previousPortfolios.find((item) => item.strategyId === portfolio.strategyId);
+          if (!previous) return true;
+          return (
+            previous.lastRebalancedAt !== portfolio.lastRebalancedAt ||
+            previous.positions.length !== portfolio.positions.length ||
+            previous.trades.length !== portfolio.trades.length
+          );
+        });
+        const tradeDelta = nextPortfolios.reduce((sum, portfolio) => {
+          const previous = previousPortfolios.find((item) => item.strategyId === portfolio.strategyId);
+          return sum + Math.max(0, portfolio.trades.length - (previous?.trades.length || 0));
+        }, 0);
+        overview.runLogs = [
+          {
+            id: `run-${Date.now()}`,
+            scope,
+            mode,
+            executedAt: new Date().toISOString(),
+            changedStrategies: changedPortfolios.map((item) => item.strategyName),
+            newTrades: tradeDelta,
+            summary:
+              changedPortfolios.length > 0
+                ? `${changedPortfolios.map((item) => item.strategyName).join('、')} 发生更新，共新增 ${tradeDelta} 笔模拟交易。`
+                : '本轮完整运行未触发新的策略调仓。',
+          },
+          ...(currentOverview.runLogs || []),
+        ].slice(0, 30);
+        nextStatus = `已完成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}完整运行，${changedPortfolios.length} 个策略发生更新，新增 ${tradeDelta} 笔模拟交易。`;
+      } else {
+        nextStatus = `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`;
+      }
       commitTrackingOverview(overview);
-      setTrackingStatus(
-        mode === 'full'
-          ? `已完成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}完整运行，模拟盘与报告已同步更新。`
-          : `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`,
-      );
+      setTrackingStatus(nextStatus);
     } catch (trackingRunError: any) {
       setTrackingError(trackingRunError.message || '运行跟踪系统失败');
     } finally {
@@ -2063,7 +2146,9 @@ function App() {
   const latestTrackingReports = trackingOverview?.latestReports || [];
   const latestTrackingValidations = trackingOverview?.validations.slice(0, 8) || [];
   const latestGeneratedReports = trackingOverview?.generatedReports.slice(0, 6) || [];
+  const latestRunLogs = trackingOverview?.runLogs.slice(0, 5) || [];
   const watchlist = trackingOverview?.watchlist || [];
+  const trackingExecutionMode = trackingOverview?.settings.executionMode || 'daily';
   const sortedWatchlist = [...watchlist].sort(
     (left, right) => right.priority - left.priority || left.addedAt.localeCompare(right.addedAt),
   );
@@ -2588,6 +2673,31 @@ function App() {
               刷新总览
             </button>
           </div>
+          <div className="mt-4 rounded-2xl border border-white/8 bg-white/5 p-4">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">运行频率</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(['daily', 'manual'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setTrackingExecutionMode(mode)}
+                  disabled={trackingAction != null}
+                  className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                    trackingExecutionMode === mode
+                      ? 'border border-sky-300/20 bg-sky-100 text-slate-950'
+                      : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  {mode === 'daily' ? '日频' : '手动频率'}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 text-xs leading-6 text-slate-400">
+              {trackingExecutionMode === 'daily'
+                ? '当前设为日频：如果 Vercel cron 已配置且 CRON_SECRET 有效，系统会每天自动跑一轮完整更新。'
+                : '当前设为手动频率：模拟盘只会在你主动点击“更新模拟盘（完整）”时推进。'}
+            </div>
+          </div>
           <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">
             已内置 5 个策略代理人：
             全球价值基金风格、全球成长基金风格、宏观对冲风格、幻方量化风格、ETF 轮动风格。
@@ -2631,6 +2741,54 @@ function App() {
               </span>
             </div>
           )}
+        </div>
+      </section>
+
+      <section className="mt-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-slate-50">运行日志</h3>
+            <p className="text-sm text-slate-400">这里会记录每次完整运行后，哪些策略真正发生了更新，以及新增了多少笔模拟交易。</p>
+          </div>
+          <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-slate-400">
+            最近 {latestRunLogs.length} 条
+          </span>
+        </div>
+        <div className="mt-5 space-y-3">
+          {latestRunLogs.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+              运行一次“更新模拟盘（完整）”后，这里会出现本轮更新日志。
+            </div>
+          ) : latestRunLogs.map((log) => (
+            <div key={log.id} className="rounded-[24px] border border-white/8 bg-white/4 p-4">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="font-semibold text-slate-100">
+                    {log.mode === 'full' ? '完整运行' : '快速运行'} · {log.scope === 'daily' ? '日报' : log.scope === 'weekly' ? '周报' : '月报'}
+                  </div>
+                  <div className="text-xs text-slate-500">{formatDateTime(log.executedAt)}</div>
+                </div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 font-semibold text-slate-300">
+                    更新策略 {log.changedStrategies.length} 个
+                  </span>
+                  <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 font-semibold text-emerald-300">
+                    新增交易 {log.newTrades} 笔
+                  </span>
+                </div>
+              </div>
+              <div className="mt-3 text-sm leading-6 text-slate-300">{log.summary}</div>
+              {log.changedStrategies.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {log.changedStrategies.map((name) => (
+                    <span key={name} className="rounded-full border border-sky-300/20 bg-sky-300/10 px-2.5 py-1 text-[11px] font-semibold text-sky-200">
+                      {name}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       </section>
 
@@ -3439,6 +3597,7 @@ function App() {
                 const latest = portfolio.history[0];
                 const activated = Boolean(portfolio.lastRebalancedAt || portfolio.trades.length || portfolio.positions.length || portfolio.history.length);
                 const recentTrades = portfolio.trades.slice(0, 2);
+                const expanded = expandedStrategyIds.includes(portfolio.strategyId);
                 return (
                   <div key={portfolio.strategyId} className="rounded-[26px] border border-white/8 bg-white/4 p-4">
                     <div className="flex items-start justify-between gap-3">
@@ -3456,6 +3615,13 @@ function App() {
                       <div className="text-right text-xs text-slate-500">
                         <div>累计交易 {portfolio.trades.length} 笔</div>
                         <div className="mt-1">净值记录 {portfolio.history.length} 条</div>
+                        <button
+                          type="button"
+                          onClick={() => toggleStrategyExpansion(portfolio.strategyId)}
+                          className="mt-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] font-semibold text-slate-300 transition hover:bg-white/10"
+                        >
+                          {expanded ? '收起详情' : '展开详情'}
+                        </button>
                       </div>
                     </div>
                     <div className="mt-2 text-2xl font-black text-slate-50">{formatCompact(latest?.equity ?? portfolio.initialCash)}</div>
@@ -3492,6 +3658,46 @@ function App() {
                         <div className="mt-2 text-xs text-slate-500">暂无交易记录。</div>
                       )}
                     </div>
+                    {expanded && (
+                      <div className="mt-4 space-y-3">
+                        <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-3">
+                          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">持仓明细</div>
+                          {portfolio.positions.length > 0 ? (
+                            <div className="mt-2 space-y-2">
+                              {portfolio.positions.map((position) => (
+                                <div key={position.symbol} className="flex items-center justify-between text-xs text-slate-300">
+                                  <span>{position.symbol}</span>
+                                  <span>
+                                    {formatNumber(position.quantity, 0)} 股 · {formatNumber(position.weight)}% · 浮盈 {formatNumber(position.unrealizedPnl)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-xs text-slate-500">暂无持仓。</div>
+                          )}
+                        </div>
+                        <div className="rounded-2xl border border-white/8 bg-slate-950/30 p-3">
+                          <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">完整交易流水</div>
+                          {portfolio.trades.length > 0 ? (
+                            <div className="mt-2 space-y-2">
+                              {portfolio.trades.slice(0, 8).map((trade) => (
+                                <div key={trade.id} className="flex items-center justify-between text-xs text-slate-300">
+                                  <span>
+                                    {formatDateTime(trade.executedAt)} · {trade.side === 'buy' ? '买入' : '卖出'} {trade.symbol}
+                                  </span>
+                                  <span>
+                                    {formatNumber(trade.quantity, 0)} 股 · {formatCompact(trade.amount)}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-xs text-slate-500">暂无交易流水。</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -118,6 +118,10 @@ export type GeneratedReport = {
   trigger?: 'manual' | 'cron';
 };
 
+export type TrackingSettings = {
+  executionMode: 'daily' | 'manual';
+};
+
 export type TrackingOverview = {
   watchlist: TrackingAsset[];
   strategies: StrategyProfile[];
@@ -125,6 +129,7 @@ export type TrackingOverview = {
   latestReports: TrackingReportRecord[];
   validations: ValidationRecord[];
   generatedReports: GeneratedReport[];
+  settings: TrackingSettings;
 };
 
 type TrackingState = TrackingOverview;
@@ -207,6 +212,9 @@ const createEmptyState = (): TrackingState => ({
   latestReports: [],
   validations: [],
   generatedReports: [],
+  settings: {
+    executionMode: 'daily',
+  },
 });
 
 export const normalizeTrackingState = (state?: Partial<TrackingOverview> | null): TrackingState => {
@@ -238,6 +246,9 @@ export const normalizeTrackingState = (state?: Partial<TrackingOverview> | null)
     latestReports: state.latestReports || [],
     validations: state.validations || [],
     generatedReports: state.generatedReports || [],
+    settings: {
+      executionMode: state.settings?.executionMode === 'manual' ? 'manual' : 'daily',
+    },
   };
 };
 
