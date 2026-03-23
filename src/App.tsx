@@ -458,44 +458,36 @@ const formatDateTime = (value?: string | null) => {
   });
 };
 
-const createPrimaryAshareScannerStrategy = (): ScannerStrategy => ({
-  id: 'strategy-cn-momentum-001',
-  name: 'A股强势横盘观察池',
-  description:
-    '只扫描 A 股（含创业板）；剔除 ST，剔除新股；昨日收盘价大于 5 元；日成交额大于 2 亿；近 20 日平均日内振幅大于 4%；近 60 日涨幅排名前 100 名；当前股价站稳 20 日均线；近 5 日股价横盘震荡。当前引擎已结构化执行：A股范围、趋势延续模板、机会分下限、风险分上限、信号分下限、量比下限、RSI 区间、近月收益下限。其余条件先保存在策略说明中，后续再扩成硬过滤字段。',
+const createDefaultScannerStrategy = (): ScannerStrategy => ({
+  id: `strategy-${Date.now()}`,
+  name: '',
+  description: '',
   templateId: 'trend-follow',
   markets: ['CN'],
   includeST: false,
   includeNewListings: false,
-  prevCloseMin: 5,
+  prevCloseMin: null,
   prevCloseMax: null,
-  turnoverMinCny: 200000000,
+  turnoverMinCny: null,
   turnoverMaxCny: null,
-  avgAmplitude20MinPct: 4,
+  avgAmplitude20MinPct: null,
   avgAmplitude20MaxPct: null,
-  top60DayGainRank: 100,
-  aboveMaDays: 20,
-  sidewaysDays: 5,
-  sidewaysMaxRangePct: 6,
-  volumeTrend: 'up',
-  minOpportunityScore: 75,
-  maxRiskScore: 55,
-  minSignalScore: 62,
-  minRelativeVolume: 1,
-  rsiMin: 45,
-  rsiMax: 68,
-  minWeekReturn: -2,
-  minMonthReturn: 6,
+  top60DayGainRank: null,
+  aboveMaDays: null,
+  sidewaysDays: null,
+  sidewaysMaxRangePct: null,
+  volumeTrend: 'any',
+  minOpportunityScore: 0,
+  maxRiskScore: 100,
+  minSignalScore: 0,
+  minRelativeVolume: 0,
+  rsiMin: 0,
+  rsiMax: 100,
+  minWeekReturn: -100,
+  minMonthReturn: -100,
   assetClasses: ['equity'],
-  actionBiases: ['watch', 'prepare'],
+  actionBiases: [],
   refreshSeconds: 60,
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString(),
-});
-
-const createDefaultScannerStrategy = (): ScannerStrategy => ({
-  ...createPrimaryAshareScannerStrategy(),
-  id: `strategy-${Date.now()}`,
   createdAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
 });
@@ -1292,11 +1284,9 @@ function App() {
       setActiveScannerStrategyId(storedStrategies[0].id);
       setEditingScannerStrategy(storedStrategies[0]);
     } else {
-      const initialStrategy = createDefaultScannerStrategy();
-      setScannerStrategies([initialStrategy]);
-      setActiveScannerStrategyId(initialStrategy.id);
-      setEditingScannerStrategy(initialStrategy);
-      persistScannerStrategies([initialStrategy]);
+      setScannerStrategies([]);
+      setActiveScannerStrategyId(null);
+      setEditingScannerStrategy(createDefaultScannerStrategy());
     }
   }, []);
 
@@ -1892,7 +1882,7 @@ function App() {
   const createScannerStrategy = () => {
     const next = createDefaultScannerStrategy();
     setEditingScannerStrategy(next);
-    setActiveScannerStrategyId(next.id);
+    setActiveScannerStrategyId(null);
   };
 
   const removeScannerStrategy = (strategyId: string) => {
@@ -1903,11 +1893,8 @@ function App() {
       setActiveScannerStrategyId(nextStrategies[0].id);
       setEditingScannerStrategy(nextStrategies[0]);
     } else {
-      const next = createDefaultScannerStrategy();
-      setActiveScannerStrategyId(next.id);
-      setEditingScannerStrategy(next);
-      setScannerStrategies([next]);
-      persistScannerStrategies([next]);
+      setActiveScannerStrategyId(null);
+      setEditingScannerStrategy(createDefaultScannerStrategy());
     }
   };
 
@@ -2709,7 +2696,7 @@ function App() {
 
           <div className="mt-5 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
             <div className="space-y-2">
-              {scannerStrategies.map((strategy) => (
+              {scannerStrategies.length > 0 ? scannerStrategies.map((strategy) => (
                 <button
                   key={strategy.id}
                   type="button"
@@ -2720,12 +2707,16 @@ function App() {
                       : 'border-white/10 bg-white/5 hover:bg-white/10'
                   }`}
                 >
-                  <div className="font-semibold text-slate-100">{strategy.name}</div>
+                  <div className="font-semibold text-slate-100">{strategy.name || '未命名策略'}</div>
                   <div className="mt-1 text-xs text-slate-500">
-                    {strategy.markets.join(' / ')} · {scannerTemplates.find((item) => item.id === strategy.templateId)?.name || strategy.templateId}
+                    {strategy.markets.join(' / ')}
                   </div>
                 </button>
-              ))}
+              )) : (
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm leading-6 text-slate-400">
+                  当前还没有已保存策略。先在右侧填写结构化条件，再点击“保存策略”，这里才会出现对应策略。
+                </div>
+              )}
             </div>
 
             <div className="rounded-[26px] border border-white/8 bg-slate-950/30 p-4">
@@ -2743,15 +2734,6 @@ function App() {
                   placeholder="策略说明，例如：只扫描A股趋势延续、机会分高于75的股票"
                 />
                 <div className="grid gap-3 md:grid-cols-2">
-                  <select
-                    value={editingScannerStrategy.templateId}
-                    onChange={(event) => updateEditingScannerStrategy('templateId', event.target.value as ScannerTemplateId)}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
-                  >
-                    {scannerTemplates.map((template) => (
-                      <option key={template.id} value={template.id}>{template.name}</option>
-                    ))}
-                  </select>
                   <input
                     type="number"
                     min={15}
@@ -2762,6 +2744,9 @@ function App() {
                     className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
                     placeholder="刷新秒数"
                   />
+                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-400">
+                    当前已改为结构化全量扫描，不再使用预设模板菜单。
+                  </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-3">
                   <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
