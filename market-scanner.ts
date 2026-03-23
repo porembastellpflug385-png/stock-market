@@ -255,12 +255,18 @@ const _inferAssetClass = (s: string): 'equity' | 'etf' | 'crypto' => {
 
 const _safeFetch = async (url: string, headers?: Record<string, string>): Promise<any> => {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
     const res = await fetch(url, { headers, signal: controller.signal });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; } finally { clearTimeout(timer); }
+};
+
+const _EASTMONEY_HEADERS = {
+  'User-Agent': 'Mozilla/5.0',
+  Accept: 'application/json,text/plain,*/*',
+  Referer: 'https://quote.eastmoney.com/',
 };
 
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
@@ -314,6 +320,7 @@ const _fetchFullAshareSnapshot = async () => {
   for (let page = 1; page <= 3; page += 1) {
     const response = await _safeFetch(
       `https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+      _EASTMONEY_HEADERS,
     );
     const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
     if (diff.length === 0) break;
@@ -353,6 +360,7 @@ const _fetchEastmoneyKlines = async (symbol: string, count = 140) => {
   const secid = _makeEastmoneySecid(symbol);
   const response = await _safeFetch(
     `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=${count}&end=20500000&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`,
+    _EASTMONEY_HEADERS,
   );
   const raw = Array.isArray(response?.data?.klines) ? response.data.klines : [];
   return raw
@@ -432,6 +440,9 @@ export const runNaturalLanguageCnScan = async (
   }
 
   const fullUniverse = await _fetchFullAshareSnapshot();
+  if (!fullUniverse.length) {
+    throw new Error('A股全量快照获取失败，请稍后重试。');
+  }
   const filteredBase = fullUniverse
     .filter((item) => !rule.excludeST || !/\*?ST/i.test(item.name))
     .filter((item) => rule.minPrevClose == null || item.previousClose > rule.minPrevClose)
@@ -547,6 +558,9 @@ export const runStructuredScanner = async (
   }
 
   const fullUniverse = await _fetchFullAshareSnapshot();
+  if (!fullUniverse.length) {
+    throw new Error('A股全量快照获取失败，请稍后重试。');
+  }
   const breakdown: Array<{ label: string; dropped: number }> = [];
 
   const applyStage = <T>(items: T[], label: string, predicate: (item: T) => boolean) => {
