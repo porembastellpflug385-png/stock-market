@@ -2784,7 +2784,7 @@ function App() {
             <InfoCard title="最近刷新" value={strategyBoard.scannedAt ? formatDateTime(strategyBoard.scannedAt) : '未运行'} subtitle={strategyBoardAutoRefresh ? '自动刷新开启' : '手动刷新'} icon={<RefreshCw className="h-4 w-4" />} />
           </div>
           <div className="mt-5 space-y-3">
-            {strategyBoard.candidates.length > 0 ? strategyBoard.candidates.slice(0, 12).map((candidate) => (
+            {strategyBoard.candidates.length > 0 ? strategyBoard.candidates.slice(0, 6).map((candidate) => (
               <div key={`strategy-board-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-white/5 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div>
@@ -2802,11 +2802,99 @@ function App() {
               </div>
             )) : (
               <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
-                运行一个策略后，这里会实时展示符合条件股票的看板。
+                运行一个策略后，这里会实时展示符合条件股票的看板。如果命中数量仍为 0，说明当前阈值较严，建议先放宽机会分、量比或 RSI 区间。
               </div>
             )}
           </div>
         </div>
+      </section>
+
+      <section className="mb-8 rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Result Board</p>
+            <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">策略命中结果区</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-400">
+              这里会完整列出本次策略扫描后所有符合条件的股票，不截断、不折叠，便于你直接查看、筛选和加入关注池。
+            </p>
+          </div>
+          <div className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-slate-200">
+            共 {strategyBoard.candidates.length} 只
+          </div>
+        </div>
+
+        {strategyBoard.candidates.length > 0 ? (
+          <div className="mt-5 overflow-hidden rounded-[24px] border border-white/8 bg-slate-950/30">
+            <div className="grid grid-cols-[1.1fr_1.4fr_0.7fr_0.8fr_0.8fr_0.8fr_1fr] gap-3 border-b border-white/8 bg-white/5 px-4 py-3 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              <div>代码</div>
+              <div>名称 / 模板</div>
+              <div>价格</div>
+              <div>当日</div>
+              <div>月度</div>
+              <div>机会分</div>
+              <div>操作</div>
+            </div>
+            <div className="max-h-[640px] overflow-y-auto">
+              {strategyBoard.candidates.map((candidate) => (
+                <div
+                  key={`strategy-board-result-${candidate.symbol}`}
+                  className="grid grid-cols-[1.1fr_1.4fr_0.7fr_0.8fr_0.8fr_0.8fr_1fr] gap-3 border-b border-white/6 px-4 py-4 text-sm text-slate-200 last:border-b-0"
+                >
+                  <div className="min-w-0">
+                    <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                    <div className="mt-1 text-xs text-slate-500">{candidate.market}</div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-slate-100">{candidate.name}</div>
+                    <div className="mt-1 truncate text-xs text-slate-500">{candidate.templateName}</div>
+                    <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{candidate.summary}</div>
+                  </div>
+                  <div className="font-medium text-slate-100">{formatNumber(candidate.metrics.price)}</div>
+                  <div className={candidate.metrics.changePercent >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                    {formatNumber(candidate.metrics.changePercent)}%
+                  </div>
+                  <div className={candidate.metrics.monthReturn >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                    {formatNumber(candidate.metrics.monthReturn)}%
+                  </div>
+                  <div>
+                    <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(candidate.opportunityScore)}`}>
+                      {candidate.opportunityScore}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => addCandidatePoolItem(candidate, {
+                        targetPriority: 1,
+                        status: 'candidate',
+                        note: '来自策略命中结果区',
+                      })}
+                      className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10"
+                    >
+                      加候选池
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => addTrackingAsset(candidate.symbol, {
+                        name: candidate.name,
+                        market: candidate.market,
+                        assetClass: candidate.assetClass,
+                      })}
+                      disabled={trackingAction != null}
+                      className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-3 py-2 text-xs font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50"
+                    >
+                      加关注池
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-5 rounded-[24px] border border-dashed border-white/10 bg-white/4 p-6 text-sm leading-6 text-slate-400">
+            当前还没有命中结果。你可以先点击“运行策略看板”，如果扫描样本已有值但命中为 0，通常说明当前策略阈值偏严。
+          </div>
+        )}
       </section>
 
       <section className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
