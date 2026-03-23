@@ -323,6 +323,7 @@ type StrategyBoardState = {
   scannedAt: string | null;
   scanned: number;
   candidates: ScannerCandidate[];
+  parserSummary?: string | null;
 };
 
 type ProviderConfig = {
@@ -1206,7 +1207,7 @@ function App() {
   const [scannerStrategies, setScannerStrategies] = useState<ScannerStrategy[]>([]);
   const [editingScannerStrategy, setEditingScannerStrategy] = useState<ScannerStrategy>(createDefaultScannerStrategy());
   const [activeScannerStrategyId, setActiveScannerStrategyId] = useState<string | null>(null);
-  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, candidates: [] });
+  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, candidates: [], parserSummary: null });
   const [strategyBoardLoading, setStrategyBoardLoading] = useState(false);
   const [strategyBoardAutoRefresh, setStrategyBoardAutoRefresh] = useState(true);
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
@@ -1890,6 +1891,7 @@ function App() {
           templateId: currentStrategy.templateId,
           markets: currentStrategy.markets,
           limit: 80,
+          strategyDescription: currentStrategy.description,
         }),
       });
       const payload = await readApiPayload(res);
@@ -1897,15 +1899,17 @@ function App() {
         throw new Error(getPayloadError(payload, '策略池扫描失败'));
       }
       const scannedCandidates = Array.isArray(payload.candidates) ? payload.candidates : [];
-      const filteredCandidates = scannedCandidates
-        .filter((item) => applyScannerStrategyFilters(item, currentStrategy))
+      const filteredCandidates = (payload?.parser
+        ? scannedCandidates
+        : scannedCandidates.filter((item) => applyScannerStrategyFilters(item, currentStrategy)))
         .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
-        .slice(0, 20);
+        .slice(0, 80);
       setStrategyBoard({
         strategyId: currentStrategy.id,
         scannedAt: new Date().toISOString(),
         scanned: Number(payload.scanned || 0),
         candidates: filteredCandidates,
+        parserSummary: typeof payload?.parser?.summary === 'string' ? payload.parser.summary : null,
       });
     } catch (strategyBoardError: any) {
       setScannerError(strategyBoardError.message || '策略池扫描失败');
@@ -2783,6 +2787,12 @@ function App() {
             <InfoCard title="命中数量" value={`${strategyBoard.candidates.length}`} subtitle="符合策略条件的股票" icon={<TrendingUp className="h-4 w-4" />} />
             <InfoCard title="最近刷新" value={strategyBoard.scannedAt ? formatDateTime(strategyBoard.scannedAt) : '未运行'} subtitle={strategyBoardAutoRefresh ? '自动刷新开启' : '手动刷新'} icon={<RefreshCw className="h-4 w-4" />} />
           </div>
+          {strategyBoard.parserSummary && (
+            <div className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 p-4 text-sm leading-6 text-emerald-100">
+              当前策略已按自然语言解析执行：
+              <div className="mt-1 text-xs text-emerald-200/90">{strategyBoard.parserSummary}</div>
+            </div>
+          )}
           <div className="mt-5 space-y-3">
             {strategyBoard.candidates.length > 0 ? strategyBoard.candidates.slice(0, 6).map((candidate) => (
               <div key={`strategy-board-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-white/5 p-4">

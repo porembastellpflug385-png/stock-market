@@ -5,6 +5,8 @@ import {
   evaluateScannerTemplate,
   getScannerUniverse,
   ensureDiscoveryReady,
+  parseScannerDescription,
+  runNaturalLanguageCnScan,
   scannerTemplates,
   type ScannerMarket,
   type ScannerTemplateId,
@@ -1208,12 +1210,27 @@ export function createApp() {
     try {
       const templateId = String(req.body?.templateId || 'trend-follow') as ScannerTemplateId;
       const limit = Math.max(10, Math.min(80, Number(req.body?.limit || 40)));
+      const strategyDescription = String(req.body?.strategyDescription || '').trim();
       const requestedMarkets = Array.isArray(req.body?.markets)
         ? req.body.markets.map((item: unknown) => String(item).toUpperCase())
         : [];
       const markets = requestedMarkets.filter((item): item is ScannerMarket =>
         ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
       );
+
+      if (strategyDescription && markets.length === 1 && markets[0] === 'CN') {
+        const parsedRule = parseScannerDescription(strategyDescription);
+        const result = await runNaturalLanguageCnScan(strategyDescription, limit);
+        return res.json({
+          template: scannerTemplates.find((item) => item.id === templateId) || scannerTemplates[3],
+          markets,
+          scanned: result.scanned,
+          requestedScanned: result.requestedScanned,
+          candidates: result.candidates,
+          parser: parsedRule,
+          scannedUniverse: [],
+        });
+      }
 
       // Await dynamic discovery refresh (cached 10min, ~2-5s on cold start)
       await ensureDiscoveryReady();

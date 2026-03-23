@@ -47,6 +47,22 @@ export type ScannerCandidate = {
   };
 };
 
+export type ParsedScannerDescriptionRule = {
+  sourceDescription: string;
+  market: ScannerMarket | null;
+  excludeST: boolean;
+  excludeNewListings: boolean;
+  minPrevClose: number | null;
+  minTurnoverCny: number | null;
+  minAvgAmplitude20Pct: number | null;
+  topReturn60Rank: number | null;
+  requireAboveSma20: boolean;
+  sidewaysDays: number | null;
+  maxSidewaysRangePct: number | null;
+  parserConfidence: 'high' | 'medium' | 'low';
+  summary: string;
+};
+
 export const scannerTemplates: ScannerTemplate[] = [
   {
     id: 'breakout',
@@ -222,6 +238,243 @@ const _safeFetch = async (url: string, headers?: Record<string, string>): Promis
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; } finally { clearTimeout(timer); }
+};
+
+const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
+
+const _avg = (values: number[]) =>
+  values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+
+const _runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+) => {
+  const results: Array<PromiseSettledResult<R>> = [];
+  for (let index = 0; index < items.length; index += limit) {
+    const batch = items.slice(index, index + limit);
+    const settled = await Promise.allSettled(batch.map(worker));
+    results.push(...settled);
+  }
+  return results;
+};
+
+const _parseBillionNumber = (description: string, fallbackUnit = 1e8) => {
+  const match = description.match(/大于\s*([0-9]+(?:\.[0-9]+)?)\s*亿/);
+  if (match) return Number(match[1]) * fallbackUnit;
+  const tenThousandMatch = description.match(/大于\s*([0-9]+(?:\.[0-9]+)?)\s*万/);
+  if (tenThousandMatch) return Number(tenThousandMatch[1]) * 1e4;
+  return null;
+};
+
+const _makeEastmoneySecid = (symbol: string) => {
+  const normalized = symbol.toUpperCase();
+  const code = normalized.replace(/\.(SS|SZ)$/, '');
+  if (normalized.endsWith('.SS')) return `1.${code}`;
+  return `0.${code}`;
+};
+
+const _fetchFullAshareSnapshot = async () => {
+  const response = await _safeFetch(
+    'https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=1&pz=5000&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24',
+  );
+  const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+  return diff
+    .filter((item) => item?.f12 && item?.f14)
+    .map((item) => {
+      const code = String(item.f12);
+      const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+      const symbol = `${code}${suffix}`;
+      return {
+        symbol,
+        name: String(item.f14 || symbol),
+        market: 'CN' as const,
+        assetClass: 'equity' as const,
+        price: Number(item.f2 || 0),
+        turnoverCny: Number(item.f6 || 0),
+        amplitudePct: Number(item.f7 || 0),
+        previousClose: Number(item.f18 || 0),
+        return60Pct: Number(item.f24 || 0),
+      };
+    });
+};
+
+const _fetchEastmoneyKlines = async (symbol: string, count = 140) => {
+  const secid = _makeEastmoneySecid(symbol);
+  const response = await _safeFetch(
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=${count}&end=20500000&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`,
+  );
+  const raw = Array.isArray(response?.data?.klines) ? response.data.klines : [];
+  return raw
+    .map((line: string) => String(line).split(','))
+    .filter((parts: string[]) => parts.length >= 6)
+    .map((parts: string[]) => ({
+      date: parts[0],
+      open: Number(parts[1] || 0),
+      close: Number(parts[2] || 0),
+      high: Number(parts[3] || 0),
+      low: Number(parts[4] || 0),
+      volume: Number(parts[5] || 0),
+      amount: Number(parts[6] || 0),
+      amplitudePct: Number(parts[7] || 0),
+    }))
+    .filter((item) => item.close > 0);
+};
+
+export const parseScannerDescription = (description: string): ParsedScannerDescriptionRule => {
+  const text = description.trim();
+  const minPrevCloseMatch = text.match(/收盘价(?:大于|>\s*)([0-9]+(?:\.[0-9]+)?)\s*元/);
+  const avgAmplitudeMatch = text.match(/近\s*20\s*日.*?振幅.*?(?:大于|>\s*)([0-9]+(?:\.[0-9]+)?)\s*%/);
+  const topReturnRankMatch = text.match(/近\s*60\s*日涨幅排名前\s*([0-9]+)\s*名/);
+  const sidewaysDaysMatch = text.match(/近\s*([0-9]+)\s*日.*?横盘震荡/);
+
+  const market =
+    /A股|创业板|沪深/i.test(text) ? 'CN' :
+    /港股/i.test(text) ? 'HK' :
+    /美股/i.test(text) ? 'US' :
+    /ETF/i.test(text) ? 'ETF' :
+    /加密|比特币|币/i.test(text) ? 'CRYPTO' :
+    null;
+
+  const rule: ParsedScannerDescriptionRule = {
+    sourceDescription: text,
+    market,
+    excludeST: /剔除\s*\*?ST|不含\s*\*?ST|过滤\s*\*?ST/i.test(text),
+    excludeNewListings: /剔除新股|排除新股|过滤新股/i.test(text),
+    minPrevClose: minPrevCloseMatch ? Number(minPrevCloseMatch[1]) : null,
+    minTurnoverCny: _parseBillionNumber(text),
+    minAvgAmplitude20Pct: avgAmplitudeMatch ? Number(avgAmplitudeMatch[1]) : null,
+    topReturn60Rank: topReturnRankMatch ? Number(topReturnRankMatch[1]) : null,
+    requireAboveSma20: /站稳\s*20\s*日均线|站上\s*20\s*日均线|20日均线之上/i.test(text),
+    sidewaysDays: sidewaysDaysMatch ? Number(sidewaysDaysMatch[1]) : null,
+    maxSidewaysRangePct: /横盘震荡/i.test(text) ? 6 : null,
+    parserConfidence: market === 'CN' ? 'high' : 'medium',
+    summary: '',
+  };
+
+  rule.summary = [
+    rule.market ? `市场=${rule.market}` : '市场=未识别',
+    rule.excludeST ? '剔除ST' : null,
+    rule.excludeNewListings ? '剔除新股' : null,
+    rule.minPrevClose != null ? `昨收>${rule.minPrevClose}` : null,
+    rule.minTurnoverCny != null ? `成交额>${_round(rule.minTurnoverCny / 1e8)}亿` : null,
+    rule.minAvgAmplitude20Pct != null ? `20日均振幅>${rule.minAvgAmplitude20Pct}%` : null,
+    rule.topReturn60Rank != null ? `60日涨幅前${rule.topReturn60Rank}` : null,
+    rule.requireAboveSma20 ? '站稳20日均线' : null,
+    rule.sidewaysDays != null ? `${rule.sidewaysDays}日横盘` : null,
+  ].filter(Boolean).join(' · ');
+
+  return rule;
+};
+
+export const runNaturalLanguageCnScan = async (
+  description: string,
+  limit = 80,
+) => {
+  const rule = parseScannerDescription(description);
+  if (rule.market !== 'CN') {
+    return {
+      rule,
+      scanned: 0,
+      requestedScanned: 0,
+      candidates: [] as ScannerCandidate[],
+    };
+  }
+
+  const fullUniverse = await _fetchFullAshareSnapshot();
+  const filteredBase = fullUniverse
+    .filter((item) => !rule.excludeST || !/\*?ST/i.test(item.name))
+    .filter((item) => rule.minPrevClose == null || item.previousClose > rule.minPrevClose)
+    .filter((item) => rule.minTurnoverCny == null || item.turnoverCny > rule.minTurnoverCny);
+
+  const rankedBy60 = [...filteredBase].sort((left, right) => right.return60Pct - left.return60Pct);
+  const topRanked = rule.topReturn60Rank
+    ? rankedBy60.slice(0, Math.max(20, rule.topReturn60Rank))
+    : rankedBy60.slice(0, 160);
+
+  const settled = await _runWithConcurrency(topRanked, 8, async (asset) => {
+    const klines = await _fetchEastmoneyKlines(asset.symbol, 140);
+    if (rule.excludeNewListings && klines.length < 120) return null;
+    if (klines.length < 25) return null;
+
+    const last20 = klines.slice(-20);
+    const avgAmplitude20 = _avg(
+      last20.map((item) => {
+        const denominator = item.close || item.open || 1;
+        return denominator > 0 ? ((item.high - item.low) / denominator) * 100 : 0;
+      }),
+    );
+    if (rule.minAvgAmplitude20Pct != null && (avgAmplitude20 ?? 0) < rule.minAvgAmplitude20Pct) return null;
+
+    const closes = klines.map((item) => item.close);
+    const last20Closes = closes.slice(-20);
+    const sma20 = last20Closes.length === 20 ? last20Closes.reduce((sum, value) => sum + value, 0) / 20 : null;
+    const currentClose = closes[closes.length - 1] || asset.price;
+    if (rule.requireAboveSma20 && sma20 != null && currentClose < sma20) return null;
+
+    const sidewaysDays = rule.sidewaysDays || 0;
+    if (sidewaysDays > 0) {
+      const recent = closes.slice(-sidewaysDays);
+      if (recent.length < sidewaysDays) return null;
+      const maxClose = Math.max(...recent);
+      const minClose = Math.min(...recent);
+      const avgClose = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+      const rangePct = avgClose > 0 ? ((maxClose - minClose) / avgClose) * 100 : 999;
+      if (rule.maxSidewaysRangePct != null && rangePct > rule.maxSidewaysRangePct) return null;
+    }
+
+    const opportunityScore = clamp(
+      65 +
+        Math.min(20, (asset.return60Pct || 0) * 0.6) +
+        Math.min(10, (avgAmplitude20 || 0) * 0.8) +
+        (sma20 != null && currentClose >= sma20 ? 6 : 0),
+      0,
+      100,
+    );
+    const riskScore = clamp(28 + Math.max(0, (avgAmplitude20 || 0) * 2.5), 0, 100);
+    return createCandidate(
+      {
+        symbol: asset.symbol,
+        name: asset.name,
+        market: 'CN',
+        assetClass: 'equity',
+      },
+      scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+      opportunityScore,
+      riskScore,
+      [
+        `昨收 ${asset.previousClose} 元，成交额 ${_round(asset.turnoverCny / 1e8)} 亿`,
+        `近 60 日涨幅 ${_round(asset.return60Pct)}%，位于当前筛选前列`,
+        `近 20 日平均振幅 ${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%`,
+        sma20 != null ? `当前价 ${_round(currentClose)}，20 日均线 ${_round(sma20)}` : '20 日均线数据不足',
+      ],
+      '满足自然语言策略解析后的 A 股强势横盘筛选条件。',
+      {
+        price: _round(currentClose),
+        changePercent: 0,
+        signalScore: Math.round(opportunityScore),
+        rsi14: null,
+        relativeVolume: null,
+        annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
+        weekReturn: null,
+        monthReturn: _round(asset.return60Pct),
+      },
+    );
+  });
+
+  const candidates = settled
+    .filter((entry): entry is PromiseFulfilledResult<ScannerCandidate | null> => entry.status === 'fulfilled')
+    .map((entry) => entry.value)
+    .filter((item): item is ScannerCandidate => Boolean(item))
+    .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
+    .slice(0, limit);
+
+  return {
+    rule,
+    scanned: filteredBase.length,
+    requestedScanned: fullUniverse.length,
+    candidates,
+  };
 };
 
 const _refreshDiscovery = async () => {
