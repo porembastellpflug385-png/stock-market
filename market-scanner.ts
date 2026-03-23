@@ -298,6 +298,13 @@ const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
   objective: '按用户自定义规则筛选市场标的。',
 };
 
+const _ASHARE_MARKET_GROUPS = [
+  'm:0+t:6',   // 深市主板
+  'm:0+t:80',  // 创业板
+  'm:1+t:2',   // 沪市主板
+  'm:1+t:23',  // 科创板
+];
+
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
 
 const _avg = (values: number[]) =>
@@ -336,39 +343,41 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<AshareSnapshotItem[
   const pageSize = 200;
   const all: AshareSnapshotItem[] = [];
 
-  let total = Infinity;
-  for (let page = 1; page <= 30; page += 1) {
-    const response = await _safeFetch(
-      `https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
-      _EASTMONEY_HEADERS,
-    );
-    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-    total = Number(response?.data?.total || total);
-    if (diff.length === 0) break;
+  for (const fs of _ASHARE_MARKET_GROUPS) {
+    let total = Infinity;
+    for (let page = 1; page <= 40; page += 1) {
+      const response = await _safeFetch(
+        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(fs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+        _EASTMONEY_HEADERS,
+      );
+      const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+      total = Number(response?.data?.total || total);
+      if (diff.length === 0) break;
 
-    all.push(
-      ...diff
-        .filter((item) => item?.f12 && item?.f14)
-        .map((item) => {
-          const code = String(item.f12);
-          const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
-          const symbol = `${code}${suffix}`;
-          return {
-            symbol,
-            name: String(item.f14 || symbol),
-            market: 'CN' as const,
-            assetClass: 'equity' as const,
-            price: Number(item.f2 || 0),
-            turnoverCny: Number(item.f6 || 0),
-            amplitudePct: Number(item.f7 || 0),
-            previousClose: Number(item.f18 || 0),
-            return60Pct: Number(item.f24 || 0),
-          };
-        }),
-    );
+      all.push(
+        ...diff
+          .filter((item) => item?.f12 && item?.f14)
+          .map((item) => {
+            const code = String(item.f12);
+            const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+            const symbol = `${code}${suffix}`;
+            return {
+              symbol,
+              name: String(item.f14 || symbol),
+              market: 'CN' as const,
+              assetClass: 'equity' as const,
+              price: Number(item.f2 || 0),
+              turnoverCny: Number(item.f6 || 0),
+              amplitudePct: Number(item.f7 || 0),
+              previousClose: Number(item.f18 || 0),
+              return60Pct: Number(item.f24 || 0),
+            };
+          }),
+      );
 
-    if (all.length >= total) break;
-    if (diff.length < 100) break;
+      if (page * pageSize >= total) break;
+      if (diff.length < pageSize / 2) break;
+    }
   }
 
   const deduped = new Map<string, AshareSnapshotItem>();
