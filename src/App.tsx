@@ -2675,7 +2675,7 @@ function App() {
         </div>
       )}
 
-      <section className="mb-8 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+      <section className="mb-8 space-y-4">
         <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -2694,33 +2694,36 @@ function App() {
             </button>
           </div>
 
-          <div className="mt-5 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
-            <div className="space-y-2">
-              {scannerStrategies.length > 0 ? scannerStrategies.map((strategy) => (
-                <button
-                  key={strategy.id}
-                  type="button"
-                  onClick={() => loadScannerStrategy(strategy.id)}
-                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
-                    activeScannerStrategyId === strategy.id
-                      ? 'border-sky-300/20 bg-sky-300/10'
-                      : 'border-white/10 bg-white/5 hover:bg-white/10'
-                  }`}
-                >
-                  <div className="font-semibold text-slate-100">{strategy.name || '未命名策略'}</div>
-                  <div className="mt-1 text-xs text-slate-500">
-                    {strategy.markets.join(' / ')}
-                  </div>
-                </button>
-              )) : (
+          <div className="mt-5 space-y-4">
+            <div>
+              <div className="mb-3 text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">已保存策略</div>
+              {scannerStrategies.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {scannerStrategies.map((strategy) => (
+                    <button
+                      key={strategy.id}
+                      type="button"
+                      onClick={() => loadScannerStrategy(strategy.id)}
+                      className={`rounded-2xl border px-4 py-3 text-left transition ${
+                        activeScannerStrategyId === strategy.id
+                          ? 'border-sky-300/20 bg-sky-300/10'
+                          : 'border-white/10 bg-white/5 hover:bg-white/10'
+                      }`}
+                    >
+                      <div className="font-semibold text-slate-100">{strategy.name || '未命名策略'}</div>
+                      <div className="mt-1 text-xs text-slate-500">{strategy.markets.join(' / ')}</div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
                 <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm leading-6 text-slate-400">
-                  当前还没有已保存策略。先在右侧填写结构化条件，再点击“保存策略”，这里才会出现对应策略。
+                  当前还没有已保存策略。先在下方填写结构化条件，再点击“保存策略”，这里才会出现对应策略。
                 </div>
               )}
             </div>
 
-            <div className="rounded-[26px] border border-white/8 bg-slate-950/30 p-4">
-              <div className="grid gap-3">
+            <div className="rounded-[26px] border border-white/8 bg-slate-950/30 p-5">
+              <div className="grid gap-4">
                 <input
                   value={editingScannerStrategy.name}
                   onChange={(event) => updateEditingScannerStrategy('name', event.target.value)}
@@ -2731,95 +2734,141 @@ function App() {
                   value={editingScannerStrategy.description}
                   onChange={(event) => updateEditingScannerStrategy('description', event.target.value)}
                   className="min-h-[80px] rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500"
-                  placeholder="策略说明，例如：只扫描A股趋势延续、机会分高于75的股票"
+                  placeholder="策略备注，用来记录这条扫描策略的思路。"
                 />
-                <div className="grid gap-3 md:grid-cols-2">
-                  <input
-                    type="number"
-                    min={15}
-                    max={600}
-                    step={15}
-                    value={editingScannerStrategy.refreshSeconds}
-                    onChange={(event) => updateEditingScannerStrategy('refreshSeconds', Math.max(15, Number(event.target.value || 60)))}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
-                    placeholder="刷新秒数"
-                  />
-                  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-400">
-                    当前已改为结构化全量扫描，不再使用预设模板菜单。
+
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-sm font-semibold text-slate-100">市场范围</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {scannerMarketOptions.map((market) => (
+                      <button
+                        key={`pool-market-${market.value}`}
+                        type="button"
+                        onClick={() => toggleStrategyMarket(market.value)}
+                        className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
+                          editingScannerStrategy.markets.includes(market.value)
+                            ? 'border border-sky-300/20 bg-sky-300/10 text-sky-100'
+                            : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                        }`}
+                      >
+                        {market.label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={editingScannerStrategy.includeST}
-                      onChange={(event) => updateEditingScannerStrategy('includeST', event.target.checked)}
-                    />
-                    包含 ST
-                  </label>
-                  <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={editingScannerStrategy.includeNewListings}
-                      onChange={(event) => updateEditingScannerStrategy('includeNewListings', event.target.checked)}
-                    />
-                    包含新股
-                  </label>
-                  <select
-                    value={editingScannerStrategy.volumeTrend}
-                    onChange={(event) => updateEditingScannerStrategy('volumeTrend', event.target.value as 'up' | 'down' | 'any')}
-                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
-                  >
-                    <option value="any">今日成交量不限</option>
-                    <option value="up">今日成交量上升</option>
-                    <option value="down">今日成交量下浮</option>
-                  </select>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">标的过滤</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={editingScannerStrategy.includeST}
+                          onChange={(event) => updateEditingScannerStrategy('includeST', event.target.checked)}
+                        />
+                        是否包含 ST
+                      </label>
+                      <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={editingScannerStrategy.includeNewListings}
+                          onChange={(event) => updateEditingScannerStrategy('includeNewListings', event.target.checked)}
+                        />
+                        是否包含新股
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">刷新与量能</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3">
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">刷新秒数</div>
+                        <input
+                          type="number"
+                          min={15}
+                          max={600}
+                          step={15}
+                          value={editingScannerStrategy.refreshSeconds}
+                          onChange={(event) => updateEditingScannerStrategy('refreshSeconds', Math.max(15, Number(event.target.value || 60)))}
+                          className="mt-2 w-full bg-transparent text-sm text-slate-100 outline-none"
+                        />
+                      </div>
+                      <div className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3">
+                        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">今日成交量</div>
+                        <select
+                          value={editingScannerStrategy.volumeTrend}
+                          onChange={(event) => updateEditingScannerStrategy('volumeTrend', event.target.value as 'up' | 'down' | 'any')}
+                          className="mt-2 w-full bg-transparent text-sm text-slate-100 outline-none"
+                        >
+                          <option value="any">不限</option>
+                          <option value="up">上升</option>
+                          <option value="down">下浮</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
-                  {scannerMarketOptions.map((market) => (
-                    <button
-                      key={`pool-market-${market.value}`}
-                      type="button"
-                      onClick={() => toggleStrategyMarket(market.value)}
-                      className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
-                        editingScannerStrategy.markets.includes(market.value)
-                          ? 'border border-sky-300/20 bg-sky-300/10 text-sky-100'
-                          : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
-                      }`}
-                    >
-                      {market.label}
-                    </button>
-                  ))}
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">昨日收盘价</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMin ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMin', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="大于多少元" />
+                      <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMax ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMax', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="小于多少元" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">日成交额</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <input type="number" step="1000000" value={editingScannerStrategy.turnoverMinCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMinCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="大于多少元" />
+                      <input type="number" step="1000000" value={editingScannerStrategy.turnoverMaxCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMaxCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="小于多少元" />
+                    </div>
+                  </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-3">
-                  <input type="number" value={editingScannerStrategy.minOpportunityScore} onChange={(event) => updateEditingScannerStrategy('minOpportunityScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低机会分" />
-                  <input type="number" value={editingScannerStrategy.maxRiskScore} onChange={(event) => updateEditingScannerStrategy('maxRiskScore', Number(event.target.value || 100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最高风险分" />
-                  <input type="number" value={editingScannerStrategy.minSignalScore} onChange={(event) => updateEditingScannerStrategy('minSignalScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低信号分" />
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">近20日平均日内振幅</div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MinPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MinPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="大于多少%" />
+                      <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MaxPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MaxPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="小于多少%" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">近60日涨幅</div>
+                    <div className="mt-3">
+                      <input type="number" value={editingScannerStrategy.top60DayGainRank ?? ''} onChange={(event) => updateEditingScannerStrategy('top60DayGainRank', event.target.value === '' ? null : Number(event.target.value))} className="w-full rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="排名前多少名" />
+                    </div>
+                  </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMin ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMin', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="昨收价大于" />
-                  <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMax ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMax', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="昨收价小于" />
+
+                <div className="grid gap-4 xl:grid-cols-3">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">当前股价站稳均线</div>
+                    <div className="mt-3">
+                      <input type="number" value={editingScannerStrategy.aboveMaDays ?? ''} onChange={(event) => updateEditingScannerStrategy('aboveMaDays', event.target.value === '' ? null : Number(event.target.value))} className="w-full rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="站稳多少日均线" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">横盘周期</div>
+                    <div className="mt-3">
+                      <input type="number" value={editingScannerStrategy.sidewaysDays ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysDays', event.target.value === '' ? null : Number(event.target.value))} className="w-full rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="近多少日横盘" />
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">横盘最大振幅</div>
+                    <div className="mt-3">
+                      <input type="number" step="0.1" value={editingScannerStrategy.sidewaysMaxRangePct ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysMaxRangePct', event.target.value === '' ? null : Number(event.target.value))} className="w-full rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="近N日最高价与最低价之差小于多少%" />
+                    </div>
+                  </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <input type="number" step="1000000" value={editingScannerStrategy.turnoverMinCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMinCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="日成交额大于（元）" />
-                  <input type="number" step="1000000" value={editingScannerStrategy.turnoverMaxCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMaxCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="日成交额小于（元）" />
+
+                <div className="rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3 text-sm leading-6 text-amber-100">
+                  当前表单只保留结构化全量扫描字段。你填写的这些条件会直接作为全量扫描依据，不再使用预设模板菜单。
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MinPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MinPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="20日均振幅大于%" />
-                  <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MaxPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MaxPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="20日均振幅小于%" />
-                </div>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <input type="number" value={editingScannerStrategy.top60DayGainRank ?? ''} onChange={(event) => updateEditingScannerStrategy('top60DayGainRank', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="60日涨幅前N名" />
-                  <input type="number" value={editingScannerStrategy.aboveMaDays ?? ''} onChange={(event) => updateEditingScannerStrategy('aboveMaDays', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="站稳N日均线" />
-                  <input type="number" value={editingScannerStrategy.sidewaysDays ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysDays', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="横盘N日" />
-                  <input type="number" step="0.1" value={editingScannerStrategy.sidewaysMaxRangePct ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysMaxRangePct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最高低差小于%" />
-                </div>
-                <div className="grid gap-3 md:grid-cols-4">
-                  <input type="number" step="0.1" value={editingScannerStrategy.minRelativeVolume} onChange={(event) => updateEditingScannerStrategy('minRelativeVolume', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低量比" />
-                  <input type="number" value={editingScannerStrategy.rsiMin} onChange={(event) => updateEditingScannerStrategy('rsiMin', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="RSI下限" />
-                  <input type="number" value={editingScannerStrategy.rsiMax} onChange={(event) => updateEditingScannerStrategy('rsiMax', Number(event.target.value || 100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="RSI上限" />
-                  <input type="number" step="0.1" value={editingScannerStrategy.minMonthReturn} onChange={(event) => updateEditingScannerStrategy('minMonthReturn', Number(event.target.value || -100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低月收益%" />
-                </div>
+
                 <div className="flex flex-wrap gap-2">
                   <button type="button" onClick={saveScannerStrategy} className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white">保存策略</button>
                   <button type="button" onClick={() => runScannerStrategyBoard(editingScannerStrategy)} disabled={strategyBoardLoading} className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50">
@@ -2898,7 +2947,7 @@ function App() {
               </div>
             )) : (
               <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
-                运行一个策略后，这里会实时展示符合条件股票的看板。如果命中数量仍为 0，说明当前阈值较严，建议先放宽机会分、量比或 RSI 区间。
+                运行一个策略后，这里会实时展示符合条件股票的看板。如果命中数量仍为 0，说明当前阈值较严，建议先放宽部分条件。
               </div>
             )}
           </div>
