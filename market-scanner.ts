@@ -292,28 +292,55 @@ const _makeEastmoneySecid = (symbol: string) => {
 };
 
 const _fetchFullAshareSnapshot = async () => {
-  const response = await _safeFetch(
-    'https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=1&pz=5000&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24',
-  );
-  const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-  return diff
-    .filter((item) => item?.f12 && item?.f14)
-    .map((item) => {
-      const code = String(item.f12);
-      const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
-      const symbol = `${code}${suffix}`;
-      return {
-        symbol,
-        name: String(item.f14 || symbol),
-        market: 'CN' as const,
-        assetClass: 'equity' as const,
-        price: Number(item.f2 || 0),
-        turnoverCny: Number(item.f6 || 0),
-        amplitudePct: Number(item.f7 || 0),
-        previousClose: Number(item.f18 || 0),
-        return60Pct: Number(item.f24 || 0),
-      };
-    });
+  const pageSize = 5000;
+  const all: Array<{
+    symbol: string;
+    name: string;
+    market: 'CN';
+    assetClass: 'equity';
+    price: number;
+    turnoverCny: number;
+    amplitudePct: number;
+    previousClose: number;
+    return60Pct: number;
+  }> = [];
+
+  for (let page = 1; page <= 3; page += 1) {
+    const response = await _safeFetch(
+      `https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+    );
+    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+    if (diff.length === 0) break;
+
+    all.push(
+      ...diff
+        .filter((item) => item?.f12 && item?.f14)
+        .map((item) => {
+          const code = String(item.f12);
+          const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+          const symbol = `${code}${suffix}`;
+          return {
+            symbol,
+            name: String(item.f14 || symbol),
+            market: 'CN' as const,
+            assetClass: 'equity' as const,
+            price: Number(item.f2 || 0),
+            turnoverCny: Number(item.f6 || 0),
+            amplitudePct: Number(item.f7 || 0),
+            previousClose: Number(item.f18 || 0),
+            return60Pct: Number(item.f24 || 0),
+          };
+        }),
+    );
+
+    if (diff.length < pageSize) break;
+  }
+
+  const deduped = new Map<string, (typeof all)[number]>();
+  all.forEach((item) => {
+    deduped.set(item.symbol, item);
+  });
+  return [...deduped.values()];
 };
 
 const _fetchEastmoneyKlines = async (symbol: string, count = 140) => {

@@ -335,6 +335,7 @@ type StrategyBoardState = {
   strategyId: string | null;
   scannedAt: string | null;
   scanned: number;
+  requestedScanned?: number;
   candidates: ScannerCandidate[];
   parserSummary?: string | null;
 };
@@ -1239,7 +1240,7 @@ function App() {
   const [scannerStrategies, setScannerStrategies] = useState<ScannerStrategy[]>([]);
   const [editingScannerStrategy, setEditingScannerStrategy] = useState<ScannerStrategy>(createDefaultScannerStrategy());
   const [activeScannerStrategyId, setActiveScannerStrategyId] = useState<string | null>(null);
-  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, candidates: [], parserSummary: null });
+  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, requestedScanned: 0, candidates: [], parserSummary: null });
   const [strategyBoardLoading, setStrategyBoardLoading] = useState(false);
   const [strategyBoardAutoRefresh, setStrategyBoardAutoRefresh] = useState(true);
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
@@ -1951,6 +1952,7 @@ function App() {
         strategyId: currentStrategy.id,
         scannedAt: new Date().toISOString(),
         scanned: Number(payload.scanned || 0),
+        requestedScanned: Number(payload.requestedScanned || payload.scanned || 0),
         candidates: filteredCandidates,
         parserSummary: typeof payload?.parser?.summary === 'string' ? payload.parser.summary : null,
       });
@@ -2918,7 +2920,8 @@ function App() {
           </div>
           <div className="mt-5 grid gap-3 md:grid-cols-4">
             <InfoCard title="当前策略" value={activeScannerStrategy?.name || '未选择'} subtitle={activeScannerStrategy ? `${activeScannerStrategy.markets.join(' / ')} · ${activeScannerStrategy.refreshSeconds}s` : '先保存策略'} icon={<BrainCircuit className="h-4 w-4" />} />
-            <InfoCard title="扫描样本" value={`${strategyBoard.scanned}`} subtitle="本轮实际扫描标的数" icon={<Search className="h-4 w-4" />} />
+            <InfoCard title="全市场样本" value={`${strategyBoard.requestedScanned || 0}`} subtitle="本轮纳入扫描范围的总标的数" icon={<Search className="h-4 w-4" />} />
+            <InfoCard title="预筛后样本" value={`${strategyBoard.scanned}`} subtitle="通过基础硬条件后进入深度计算的标的数" icon={<Search className="h-4 w-4" />} />
             <InfoCard title="命中数量" value={`${strategyBoard.candidates.length}`} subtitle="符合策略条件的股票" icon={<TrendingUp className="h-4 w-4" />} />
             <InfoCard title="最近刷新" value={strategyBoard.scannedAt ? formatDateTime(strategyBoard.scannedAt) : '未运行'} subtitle={strategyBoardAutoRefresh ? '自动刷新开启' : '手动刷新'} icon={<RefreshCw className="h-4 w-4" />} />
           </div>
