@@ -63,6 +63,23 @@ export type ParsedScannerDescriptionRule = {
   summary: string;
 };
 
+export type StructuredScannerFilters = {
+  markets?: ScannerMarket[];
+  includeST?: boolean;
+  includeNewListings?: boolean;
+  prevCloseMin?: number | null;
+  prevCloseMax?: number | null;
+  turnoverMinCny?: number | null;
+  turnoverMaxCny?: number | null;
+  avgAmplitude20MinPct?: number | null;
+  avgAmplitude20MaxPct?: number | null;
+  top60DayGainRank?: number | null;
+  aboveMaDays?: number | null;
+  sidewaysDays?: number | null;
+  sidewaysMaxRangePct?: number | null;
+  volumeTrend?: 'up' | 'down' | 'any';
+};
+
 export const scannerTemplates: ScannerTemplate[] = [
   {
     id: 'breakout',
@@ -474,6 +491,142 @@ export const runNaturalLanguageCnScan = async (
     scanned: filteredBase.length,
     requestedScanned: fullUniverse.length,
     candidates,
+  };
+};
+
+export const runStructuredScanner = async (
+  filters: StructuredScannerFilters,
+  limit = 80,
+) => {
+  const markets = Array.isArray(filters.markets) ? filters.markets : [];
+  if (!(markets.length === 1 && markets[0] === 'CN')) {
+    return {
+      scanned: 0,
+      requestedScanned: 0,
+      candidates: [] as ScannerCandidate[],
+      summary: '当前结构化全量扫描已优先支持 A 股。',
+    };
+  }
+
+  const fullUniverse = await _fetchFullAshareSnapshot();
+  const filteredBase = fullUniverse
+    .filter((item) => filters.includeST || !/\*?ST/i.test(item.name))
+    .filter((item) => (filters.prevCloseMin == null ? true : item.previousClose > filters.prevCloseMin))
+    .filter((item) => (filters.prevCloseMax == null ? true : item.previousClose < filters.prevCloseMax))
+    .filter((item) => (filters.turnoverMinCny == null ? true : item.turnoverCny > filters.turnoverMinCny))
+    .filter((item) => (filters.turnoverMaxCny == null ? true : item.turnoverCny < filters.turnoverMaxCny));
+
+  const rankedBy60 = [...filteredBase].sort((left, right) => right.return60Pct - left.return60Pct);
+  const topRanked = filters.top60DayGainRank
+    ? rankedBy60.slice(0, Math.max(20, filters.top60DayGainRank))
+    : rankedBy60.slice(0, 300);
+
+  const settled = await _runWithConcurrency(topRanked, 8, async (asset) => {
+    const klines = await _fetchEastmoneyKlines(asset.symbol, 160);
+    if (!filters.includeNewListings && klines.length < 120) return null;
+    if (klines.length < 25) return null;
+
+    const last20 = klines.slice(-20);
+    const avgAmplitude20 = _avg(
+      last20.map((item) => {
+        const denominator = item.close || item.open || 1;
+        return denominator > 0 ? ((item.high - item.low) / denominator) * 100 : 0;
+      }),
+    );
+    if (filters.avgAmplitude20MinPct != null && (avgAmplitude20 ?? 0) < filters.avgAmplitude20MinPct) return null;
+    if (filters.avgAmplitude20MaxPct != null && (avgAmplitude20 ?? 999) > filters.avgAmplitude20MaxPct) return null;
+
+    const closes = klines.map((item) => item.close);
+    const currentClose = closes[closes.length - 1] || asset.price;
+
+    if (filters.aboveMaDays && filters.aboveMaDays > 0) {
+      const recent = closes.slice(-filters.aboveMaDays);
+      if (recent.length < filters.aboveMaDays) return null;
+      const ma = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+      if (currentClose < ma) return null;
+    }
+
+    const sidewaysDays = filters.sidewaysDays || 0;
+    if (sidewaysDays > 0) {
+      const recent = closes.slice(-sidewaysDays);
+      if (recent.length < sidewaysDays) return null;
+      const maxClose = Math.max(...recent);
+      const minClose = Math.min(...recent);
+      const avgClose = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+      const rangePct = avgClose > 0 ? ((maxClose - minClose) / avgClose) * 100 : 999;
+      if (filters.sidewaysMaxRangePct != null && rangePct > filters.sidewaysMaxRangePct) return null;
+    }
+
+    if (filters.volumeTrend && filters.volumeTrend !== 'any' && klines.length >= 2) {
+      const lastVolume = klines[klines.length - 1].volume;
+      const previousVolume = klines[klines.length - 2].volume;
+      if (filters.volumeTrend === 'up' && !(lastVolume > previousVolume)) return null;
+      if (filters.volumeTrend === 'down' && !(lastVolume < previousVolume)) return null;
+    }
+
+    const opportunityScore = clamp(
+      60 +
+        Math.min(18, (asset.return60Pct || 0) * 0.55) +
+        Math.min(12, (avgAmplitude20 || 0) * 0.9) +
+        (filters.aboveMaDays ? 8 : 0) +
+        (filters.sidewaysDays ? 6 : 0),
+      0,
+      100,
+    );
+    const riskScore = clamp(30 + Math.max(0, (avgAmplitude20 || 0) * 2.2), 0, 100);
+
+    return createCandidate(
+      {
+        symbol: asset.symbol,
+        name: asset.name,
+        market: 'CN',
+        assetClass: 'equity',
+      },
+      scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+      opportunityScore,
+      riskScore,
+      [
+        `昨收 ${asset.previousClose} 元，成交额 ${_round(asset.turnoverCny / 1e8)} 亿`,
+        `近 60 日涨幅 ${_round(asset.return60Pct)}%`,
+        `近 20 日平均振幅 ${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%`,
+        filters.aboveMaDays ? `当前股价站稳 ${filters.aboveMaDays} 日均线` : '未启用均线过滤',
+      ],
+      '满足结构化策略池条件的 A 股候选。',
+      {
+        price: _round(currentClose),
+        changePercent: 0,
+        signalScore: Math.round(opportunityScore),
+        rsi14: null,
+        relativeVolume: null,
+        annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
+        weekReturn: null,
+        monthReturn: _round(asset.return60Pct),
+      },
+    );
+  });
+
+  const candidates = settled
+    .filter((entry): entry is PromiseFulfilledResult<ScannerCandidate | null> => entry.status === 'fulfilled')
+    .map((entry) => entry.value)
+    .filter((item): item is ScannerCandidate => Boolean(item))
+    .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
+    .slice(0, limit);
+
+  return {
+    scanned: filteredBase.length,
+    requestedScanned: fullUniverse.length,
+    candidates,
+    summary: [
+      '结构化条件扫描',
+      filters.prevCloseMin != null ? `昨收>${filters.prevCloseMin}` : null,
+      filters.turnoverMinCny != null ? `成交额>${_round(filters.turnoverMinCny / 1e8)}亿` : null,
+      filters.avgAmplitude20MinPct != null ? `20日均振幅>${filters.avgAmplitude20MinPct}%` : null,
+      filters.top60DayGainRank != null ? `60日涨幅前${filters.top60DayGainRank}` : null,
+      filters.aboveMaDays != null ? `站稳${filters.aboveMaDays}日均线` : null,
+      filters.sidewaysDays != null ? `${filters.sidewaysDays}日横盘` : null,
+      filters.sidewaysMaxRangePct != null ? `区间<${filters.sidewaysMaxRangePct}%` : null,
+      filters.volumeTrend === 'up' ? '今日放量' : filters.volumeTrend === 'down' ? '今日缩量' : null,
+    ].filter(Boolean).join(' · '),
   };
 };
 

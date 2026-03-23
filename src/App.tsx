@@ -303,6 +303,19 @@ type ScannerStrategy = {
   description: string;
   templateId: ScannerTemplateId;
   markets: ScannerMarket[];
+  includeST: boolean;
+  includeNewListings: boolean;
+  prevCloseMin: number | null;
+  prevCloseMax: number | null;
+  turnoverMinCny: number | null;
+  turnoverMaxCny: number | null;
+  avgAmplitude20MinPct: number | null;
+  avgAmplitude20MaxPct: number | null;
+  top60DayGainRank: number | null;
+  aboveMaDays: number | null;
+  sidewaysDays: number | null;
+  sidewaysMaxRangePct: number | null;
+  volumeTrend: 'up' | 'down' | 'any';
   minOpportunityScore: number;
   maxRiskScore: number;
   minSignalScore: number;
@@ -452,6 +465,19 @@ const createPrimaryAshareScannerStrategy = (): ScannerStrategy => ({
     '只扫描 A 股（含创业板）；剔除 ST，剔除新股；昨日收盘价大于 5 元；日成交额大于 2 亿；近 20 日平均日内振幅大于 4%；近 60 日涨幅排名前 100 名；当前股价站稳 20 日均线；近 5 日股价横盘震荡。当前引擎已结构化执行：A股范围、趋势延续模板、机会分下限、风险分上限、信号分下限、量比下限、RSI 区间、近月收益下限。其余条件先保存在策略说明中，后续再扩成硬过滤字段。',
   templateId: 'trend-follow',
   markets: ['CN'],
+  includeST: false,
+  includeNewListings: false,
+  prevCloseMin: 5,
+  prevCloseMax: null,
+  turnoverMinCny: 200000000,
+  turnoverMaxCny: null,
+  avgAmplitude20MinPct: 4,
+  avgAmplitude20MaxPct: null,
+  top60DayGainRank: 100,
+  aboveMaDays: 20,
+  sidewaysDays: 5,
+  sidewaysMaxRangePct: 6,
+  volumeTrend: 'up',
   minOpportunityScore: 75,
   maxRiskScore: 55,
   minSignalScore: 62,
@@ -699,7 +725,21 @@ const readStoredScannerStrategies = (): ScannerStrategy[] => {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed)
-      ? parsed.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
+      ? parsed
+          .filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
+          .map((item) => {
+            const fallback = createDefaultScannerStrategy();
+            return {
+              ...fallback,
+              ...item,
+              markets: Array.isArray(item.markets) && item.markets.length ? item.markets : fallback.markets,
+              assetClasses: Array.isArray(item.assetClasses) ? item.assetClasses : fallback.assetClasses,
+              actionBiases: Array.isArray(item.actionBiases) ? item.actionBiases : fallback.actionBiases,
+              includeST: typeof item.includeST === 'boolean' ? item.includeST : fallback.includeST,
+              includeNewListings: typeof item.includeNewListings === 'boolean' ? item.includeNewListings : fallback.includeNewListings,
+              volumeTrend: item.volumeTrend === 'up' || item.volumeTrend === 'down' ? item.volumeTrend : 'any',
+            } as ScannerStrategy;
+          })
       : [];
   } catch {
     return [];
@@ -1892,6 +1932,22 @@ function App() {
           markets: currentStrategy.markets,
           limit: 80,
           strategyDescription: currentStrategy.description,
+          structuredFilters: {
+            markets: currentStrategy.markets,
+            includeST: currentStrategy.includeST,
+            includeNewListings: currentStrategy.includeNewListings,
+            prevCloseMin: currentStrategy.prevCloseMin,
+            prevCloseMax: currentStrategy.prevCloseMax,
+            turnoverMinCny: currentStrategy.turnoverMinCny,
+            turnoverMaxCny: currentStrategy.turnoverMaxCny,
+            avgAmplitude20MinPct: currentStrategy.avgAmplitude20MinPct,
+            avgAmplitude20MaxPct: currentStrategy.avgAmplitude20MaxPct,
+            top60DayGainRank: currentStrategy.top60DayGainRank,
+            aboveMaDays: currentStrategy.aboveMaDays,
+            sidewaysDays: currentStrategy.sidewaysDays,
+            sidewaysMaxRangePct: currentStrategy.sidewaysMaxRangePct,
+            volumeTrend: currentStrategy.volumeTrend,
+          },
         }),
       });
       const payload = await readApiPayload(res);
@@ -2707,6 +2763,33 @@ function App() {
                     placeholder="刷新秒数"
                   />
                 </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={editingScannerStrategy.includeST}
+                      onChange={(event) => updateEditingScannerStrategy('includeST', event.target.checked)}
+                    />
+                    包含 ST
+                  </label>
+                  <label className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={editingScannerStrategy.includeNewListings}
+                      onChange={(event) => updateEditingScannerStrategy('includeNewListings', event.target.checked)}
+                    />
+                    包含新股
+                  </label>
+                  <select
+                    value={editingScannerStrategy.volumeTrend}
+                    onChange={(event) => updateEditingScannerStrategy('volumeTrend', event.target.value as 'up' | 'down' | 'any')}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
+                  >
+                    <option value="any">今日成交量不限</option>
+                    <option value="up">今日成交量上升</option>
+                    <option value="down">今日成交量下浮</option>
+                  </select>
+                </div>
                 <div className="flex flex-wrap gap-2">
                   {scannerMarketOptions.map((market) => (
                     <button
@@ -2727,6 +2810,24 @@ function App() {
                   <input type="number" value={editingScannerStrategy.minOpportunityScore} onChange={(event) => updateEditingScannerStrategy('minOpportunityScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低机会分" />
                   <input type="number" value={editingScannerStrategy.maxRiskScore} onChange={(event) => updateEditingScannerStrategy('maxRiskScore', Number(event.target.value || 100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最高风险分" />
                   <input type="number" value={editingScannerStrategy.minSignalScore} onChange={(event) => updateEditingScannerStrategy('minSignalScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低信号分" />
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMin ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMin', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="昨收价大于" />
+                  <input type="number" step="0.01" value={editingScannerStrategy.prevCloseMax ?? ''} onChange={(event) => updateEditingScannerStrategy('prevCloseMax', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="昨收价小于" />
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <input type="number" step="1000000" value={editingScannerStrategy.turnoverMinCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMinCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="日成交额大于（元）" />
+                  <input type="number" step="1000000" value={editingScannerStrategy.turnoverMaxCny ?? ''} onChange={(event) => updateEditingScannerStrategy('turnoverMaxCny', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="日成交额小于（元）" />
+                </div>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MinPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MinPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="20日均振幅大于%" />
+                  <input type="number" step="0.1" value={editingScannerStrategy.avgAmplitude20MaxPct ?? ''} onChange={(event) => updateEditingScannerStrategy('avgAmplitude20MaxPct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="20日均振幅小于%" />
+                </div>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <input type="number" value={editingScannerStrategy.top60DayGainRank ?? ''} onChange={(event) => updateEditingScannerStrategy('top60DayGainRank', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="60日涨幅前N名" />
+                  <input type="number" value={editingScannerStrategy.aboveMaDays ?? ''} onChange={(event) => updateEditingScannerStrategy('aboveMaDays', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="站稳N日均线" />
+                  <input type="number" value={editingScannerStrategy.sidewaysDays ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysDays', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="横盘N日" />
+                  <input type="number" step="0.1" value={editingScannerStrategy.sidewaysMaxRangePct ?? ''} onChange={(event) => updateEditingScannerStrategy('sidewaysMaxRangePct', event.target.value === '' ? null : Number(event.target.value))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最高低差小于%" />
                 </div>
                 <div className="grid gap-3 md:grid-cols-4">
                   <input type="number" step="0.1" value={editingScannerStrategy.minRelativeVolume} onChange={(event) => updateEditingScannerStrategy('minRelativeVolume', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低量比" />

@@ -7,6 +7,7 @@ import {
   ensureDiscoveryReady,
   parseScannerDescription,
   runNaturalLanguageCnScan,
+  runStructuredScanner,
   scannerTemplates,
   type ScannerMarket,
   type ScannerTemplateId,
@@ -1217,6 +1218,38 @@ export function createApp() {
       const markets = requestedMarkets.filter((item): item is ScannerMarket =>
         ['US', 'CN', 'HK', 'ETF', 'CRYPTO'].includes(item),
       );
+      const structuredFilters = req.body?.structuredFilters || null;
+
+      if (structuredFilters && markets.length === 1 && markets[0] === 'CN') {
+        const result = await runStructuredScanner(
+          {
+            markets,
+            includeST: Boolean(structuredFilters.includeST),
+            includeNewListings: Boolean(structuredFilters.includeNewListings),
+            prevCloseMin: structuredFilters.prevCloseMin == null ? null : Number(structuredFilters.prevCloseMin),
+            prevCloseMax: structuredFilters.prevCloseMax == null ? null : Number(structuredFilters.prevCloseMax),
+            turnoverMinCny: structuredFilters.turnoverMinCny == null ? null : Number(structuredFilters.turnoverMinCny),
+            turnoverMaxCny: structuredFilters.turnoverMaxCny == null ? null : Number(structuredFilters.turnoverMaxCny),
+            avgAmplitude20MinPct: structuredFilters.avgAmplitude20MinPct == null ? null : Number(structuredFilters.avgAmplitude20MinPct),
+            avgAmplitude20MaxPct: structuredFilters.avgAmplitude20MaxPct == null ? null : Number(structuredFilters.avgAmplitude20MaxPct),
+            top60DayGainRank: structuredFilters.top60DayGainRank == null ? null : Number(structuredFilters.top60DayGainRank),
+            aboveMaDays: structuredFilters.aboveMaDays == null ? null : Number(structuredFilters.aboveMaDays),
+            sidewaysDays: structuredFilters.sidewaysDays == null ? null : Number(structuredFilters.sidewaysDays),
+            sidewaysMaxRangePct: structuredFilters.sidewaysMaxRangePct == null ? null : Number(structuredFilters.sidewaysMaxRangePct),
+            volumeTrend: structuredFilters.volumeTrend === 'up' || structuredFilters.volumeTrend === 'down' ? structuredFilters.volumeTrend : 'any',
+          },
+          limit,
+        );
+        return res.json({
+          template: scannerTemplates.find((item) => item.id === templateId) || scannerTemplates[3],
+          markets,
+          scanned: result.scanned,
+          requestedScanned: result.requestedScanned,
+          candidates: result.candidates,
+          parser: { summary: result.summary },
+          scannedUniverse: [],
+        });
+      }
 
       if (strategyDescription && markets.length === 1 && markets[0] === 'CN') {
         const parsedRule = parseScannerDescription(strategyDescription);
