@@ -185,6 +185,10 @@ type ScannerCandidate = {
   actionBias: 'watch' | 'prepare' | 'execute';
   summary: string;
   reasons: string[];
+  screeningFacts?: Array<{
+    label: string;
+    value: string;
+  }>;
   metrics: {
     price: number;
     changePercent: number;
@@ -2041,6 +2045,7 @@ function App() {
         actionBias: item.actionBias,
         summary: item.summary,
         reasons: item.reasons,
+        screeningFacts: item.screeningFacts,
         metrics: item.metrics,
       }));
 
@@ -3039,6 +3044,19 @@ function App() {
                     <div className="truncate font-medium text-slate-100">{candidate.name}</div>
                     <div className="mt-1 truncate text-xs text-slate-500">{candidate.templateName}</div>
                     <div className="mt-1 line-clamp-2 text-xs leading-5 text-slate-400">{candidate.summary}</div>
+                    {candidate.screeningFacts && candidate.screeningFacts.length > 0 && (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {candidate.screeningFacts.map((fact, index) => (
+                          <div
+                            key={`${candidate.symbol}-fact-${index}`}
+                            className="rounded-xl border border-white/8 bg-white/5 px-2.5 py-1.5 text-[11px] leading-5 text-slate-300"
+                          >
+                            <span className="text-slate-500">{fact.label}：</span>
+                            <span className="font-semibold text-slate-100">{fact.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="font-medium text-slate-100">{formatNumber(candidate.metrics.price)}</div>
                   <div className={candidate.metrics.changePercent >= 0 ? 'text-emerald-300' : 'text-rose-300'}>

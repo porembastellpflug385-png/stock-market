@@ -35,6 +35,10 @@ export type ScannerCandidate = {
   actionBias: 'watch' | 'prepare' | 'execute';
   summary: string;
   reasons: string[];
+  screeningFacts?: Array<{
+    label: string;
+    value: string;
+  }>;
   metrics: {
     price: number;
     changePercent: number;
@@ -269,6 +273,13 @@ const _EASTMONEY_HEADERS = {
   Referer: 'https://quote.eastmoney.com/',
 };
 
+const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
+  id: 'trend-follow',
+  name: '结构化全量扫描',
+  description: '按结构化条件执行的全量扫描。',
+  objective: '按用户自定义规则筛选市场标的。',
+};
+
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
 
 const _avg = (values: number[]) =>
@@ -304,7 +315,7 @@ const _makeEastmoneySecid = (symbol: string) => {
 };
 
 const _fetchFullAshareSnapshot = async () => {
-  const pageSize = 5000;
+  const pageSize = 200;
   const all: Array<{
     symbol: string;
     name: string;
@@ -317,12 +328,14 @@ const _fetchFullAshareSnapshot = async () => {
     return60Pct: number;
   }> = [];
 
-  for (let page = 1; page <= 3; page += 1) {
+  let total = Infinity;
+  for (let page = 1; page <= 30; page += 1) {
     const response = await _safeFetch(
       `https://push2.eastmoney.com/api/qt/clist/get?fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
       _EASTMONEY_HEADERS,
     );
     const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+    total = Number(response?.data?.total || total);
     if (diff.length === 0) break;
 
     all.push(
@@ -346,7 +359,8 @@ const _fetchFullAshareSnapshot = async () => {
         }),
     );
 
-    if (diff.length < pageSize) break;
+    if (all.length >= total) break;
+    if (diff.length < Math.min(pageSize, 100)) break;
   }
 
   const deduped = new Map<string, (typeof all)[number]>();
@@ -500,7 +514,7 @@ export const runNaturalLanguageCnScan = async (
         market: 'CN',
         assetClass: 'equity',
       },
-      scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+      _STRUCTURED_SCAN_TEMPLATE,
       opportunityScore,
       riskScore,
       [
@@ -520,6 +534,27 @@ export const runNaturalLanguageCnScan = async (
         weekReturn: null,
         monthReturn: _round(asset.return60Pct),
       },
+      [
+        { label: '昨收', value: `${_round(asset.previousClose)} 元` },
+        { label: '日成交额', value: `${_round(asset.turnoverCny / 1e8)} 亿` },
+        { label: '20日均振幅', value: `${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%` },
+        ...(rule.topReturn60Rank != null ? [{ label: '60日涨幅排名条件', value: `前 ${rule.topReturn60Rank} 名` }] : []),
+        { label: '60日涨幅', value: `${_round(asset.return60Pct)}%` },
+        ...(sma20 != null ? [{ label: '20日均线', value: `${_round(sma20)}` }, { label: '当前价', value: `${_round(currentClose)}` }] : []),
+        ...(rule.sidewaysDays != null && rule.maxSidewaysRangePct != null
+          ? (() => {
+              const recent = closes.slice(-rule.sidewaysDays);
+              const maxClose = Math.max(...recent);
+              const minClose = Math.min(...recent);
+              const avgClose = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+              const rangePct = avgClose > 0 ? ((maxClose - minClose) / avgClose) * 100 : 0;
+              return [
+                { label: `${rule.sidewaysDays}日横盘振幅`, value: `${_round(rangePct)}%` },
+                { label: '横盘阈值', value: `< ${rule.maxSidewaysRangePct}%` },
+              ];
+            })()
+          : []),
+      ],
     );
   });
 
@@ -607,7 +642,7 @@ export const runStructuredScanner = async (
         failureReason: '20日平均振幅下限',
         nearMiss: createCandidate(
           { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
-          scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+          _STRUCTURED_SCAN_TEMPLATE,
           clamp(52 + Math.min(12, (asset.return60Pct || 0) * 0.3), 0, 100),
           clamp(35 + Math.max(0, (avgAmplitude20 || 0) * 1.8), 0, 100),
           [
@@ -625,6 +660,10 @@ export const runStructuredScanner = async (
             weekReturn: null,
             monthReturn: _round(asset.return60Pct),
           },
+          [
+            { label: '20日均振幅', value: `${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%` },
+            { label: '目标阈值', value: `> ${filters.avgAmplitude20MinPct}%` },
+          ],
         ),
       };
     }
@@ -643,9 +682,9 @@ export const runStructuredScanner = async (
         return {
           candidate: null,
           failureReason: '站稳均线',
-          nearMiss: createCandidate(
+        nearMiss: createCandidate(
             { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
-            scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+            _STRUCTURED_SCAN_TEMPLATE,
             clamp(56 + Math.min(12, (asset.return60Pct || 0) * 0.35), 0, 100),
             42,
             [
@@ -661,10 +700,14 @@ export const runStructuredScanner = async (
               relativeVolume: null,
               annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
               weekReturn: null,
-              monthReturn: _round(asset.return60Pct),
-            },
-          ),
-        };
+            monthReturn: _round(asset.return60Pct),
+          },
+          [
+            { label: '当前价', value: `${_round(currentClose)}` },
+            { label: `${filters.aboveMaDays}日均线`, value: `${_round(ma)}` },
+          ],
+        ),
+      };
       }
     }
 
@@ -680,9 +723,9 @@ export const runStructuredScanner = async (
         return {
           candidate: null,
           failureReason: '横盘振幅',
-          nearMiss: createCandidate(
+        nearMiss: createCandidate(
             { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
-            scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+            _STRUCTURED_SCAN_TEMPLATE,
             clamp(54 + Math.min(10, (asset.return60Pct || 0) * 0.3), 0, 100),
             45,
             [
@@ -698,10 +741,14 @@ export const runStructuredScanner = async (
               relativeVolume: null,
               annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
               weekReturn: null,
-              monthReturn: _round(asset.return60Pct),
-            },
-          ),
-        };
+            monthReturn: _round(asset.return60Pct),
+          },
+          [
+            { label: `${sidewaysDays}日横盘振幅`, value: `${_round(rangePct)}%` },
+            { label: '目标阈值', value: `< ${filters.sidewaysMaxRangePct}%` },
+          ],
+        ),
+      };
       }
     }
 
@@ -730,7 +777,7 @@ export const runStructuredScanner = async (
         market: 'CN',
         assetClass: 'equity',
       },
-      scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+      _STRUCTURED_SCAN_TEMPLATE,
       opportunityScore,
       riskScore,
       [
@@ -750,6 +797,38 @@ export const runStructuredScanner = async (
         weekReturn: null,
         monthReturn: _round(asset.return60Pct),
       },
+      [
+        { label: '昨收', value: `${_round(asset.previousClose)} 元` },
+        { label: '日成交额', value: `${_round(asset.turnoverCny / 1e8)} 亿` },
+        { label: '20日均振幅', value: `${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%` },
+        ...(filters.top60DayGainRank != null ? [{ label: '60日涨幅排名条件', value: `前 ${filters.top60DayGainRank} 名` }] : []),
+        { label: '60日涨幅', value: `${_round(asset.return60Pct)}%` },
+        ...(filters.aboveMaDays ? (() => {
+          const recent = closes.slice(-filters.aboveMaDays);
+          const ma = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+          return [
+            { label: `${filters.aboveMaDays}日均线`, value: `${_round(ma)}` },
+            { label: '当前价', value: `${_round(currentClose)}` },
+          ];
+        })() : []),
+        ...(filters.sidewaysDays && filters.sidewaysMaxRangePct != null ? (() => {
+          const recent = closes.slice(-filters.sidewaysDays);
+          const maxClose = Math.max(...recent);
+          const minClose = Math.min(...recent);
+          const avgClose = recent.reduce((sum, value) => sum + value, 0) / recent.length;
+          const rangePct = avgClose > 0 ? ((maxClose - minClose) / avgClose) * 100 : 0;
+          return [
+            { label: `${filters.sidewaysDays}日横盘振幅`, value: `${_round(rangePct)}%` },
+            { label: '横盘阈值', value: `< ${filters.sidewaysMaxRangePct}%` },
+          ];
+        })() : []),
+        ...(filters.volumeTrend && filters.volumeTrend !== 'any' && klines.length >= 2
+          ? [{
+              label: '今日成交量',
+              value: `${klines[klines.length - 1].volume > klines[klines.length - 2].volume ? '上升' : '下浮'}（昨日 ${_round(klines[klines.length - 2].volume, 0)} / 今日 ${_round(klines[klines.length - 1].volume, 0)}）`,
+            }]
+          : []),
+      ],
     ), failureReason: null, nearMiss: null };
   });
 
@@ -922,6 +1001,7 @@ const createCandidate = (
   reasons: string[],
   summary: string,
   metrics: ScannerCandidate['metrics'],
+  screeningFacts?: ScannerCandidate['screeningFacts'],
 ): ScannerCandidate => ({
   symbol: asset.symbol,
   name: asset.name,
@@ -937,6 +1017,7 @@ const createCandidate = (
     'watch',
   summary,
   reasons: reasons.slice(0, 4),
+  screeningFacts: screeningFacts?.slice(0, 10),
   metrics,
 });
 
