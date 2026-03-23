@@ -1247,6 +1247,7 @@ export function createApp() {
           requestedScanned: result.requestedScanned,
           candidates: result.candidates,
           parser: { summary: result.summary },
+          diagnostics: result.diagnostics,
           scannedUniverse: [],
         });
       }

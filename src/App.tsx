@@ -338,6 +338,11 @@ type StrategyBoardState = {
   requestedScanned?: number;
   candidates: ScannerCandidate[];
   parserSummary?: string | null;
+  diagnostics?: {
+    topFilter: string | null;
+    breakdown: Array<{ label: string; dropped: number }>;
+    nearMisses: ScannerCandidate[];
+  } | null;
 };
 
 type ProviderConfig = {
@@ -1240,7 +1245,7 @@ function App() {
   const [scannerStrategies, setScannerStrategies] = useState<ScannerStrategy[]>([]);
   const [editingScannerStrategy, setEditingScannerStrategy] = useState<ScannerStrategy>(createDefaultScannerStrategy());
   const [activeScannerStrategyId, setActiveScannerStrategyId] = useState<string | null>(null);
-  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, requestedScanned: 0, candidates: [], parserSummary: null });
+  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, requestedScanned: 0, candidates: [], parserSummary: null, diagnostics: null });
   const [strategyBoardLoading, setStrategyBoardLoading] = useState(false);
   const [strategyBoardAutoRefresh, setStrategyBoardAutoRefresh] = useState(true);
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
@@ -1955,6 +1960,13 @@ function App() {
         requestedScanned: Number(payload.requestedScanned || payload.scanned || 0),
         candidates: filteredCandidates,
         parserSummary: typeof payload?.parser?.summary === 'string' ? payload.parser.summary : null,
+        diagnostics: payload?.diagnostics && typeof payload.diagnostics === 'object'
+          ? {
+              topFilter: typeof payload.diagnostics.topFilter === 'string' ? payload.diagnostics.topFilter : null,
+              breakdown: Array.isArray(payload.diagnostics.breakdown) ? payload.diagnostics.breakdown : [],
+              nearMisses: Array.isArray(payload.diagnostics.nearMisses) ? payload.diagnostics.nearMisses : [],
+            }
+          : null,
       });
     } catch (strategyBoardError: any) {
       setScannerError(strategyBoardError.message || '策略池扫描失败');
@@ -2949,8 +2961,39 @@ function App() {
                 <div className="mt-3 text-sm leading-6 text-slate-300">{candidate.summary}</div>
               </div>
             )) : (
-              <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
-                运行一个策略后，这里会实时展示符合条件股票的看板。如果命中数量仍为 0，说明当前阈值较严，建议先放宽部分条件。
+              <div className="space-y-3">
+                <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+                  运行一个策略后，这里会实时展示符合条件股票的看板。如果命中数量仍为 0，说明当前阈值较严，建议先放宽部分条件。
+                </div>
+                {strategyBoard.diagnostics?.topFilter && (
+                  <div className="rounded-2xl border border-amber-300/15 bg-amber-300/8 p-4 text-sm leading-6 text-amber-100">
+                    过滤最严格的条件是：<span className="font-semibold">{strategyBoard.diagnostics.topFilter}</span>
+                    <div className="mt-2 text-xs text-amber-200/90">
+                      {strategyBoard.diagnostics.breakdown.slice(0, 5).map((item) => `${item.label} -${item.dropped}`).join(' · ')}
+                    </div>
+                  </div>
+                )}
+                {strategyBoard.diagnostics?.nearMisses?.length ? (
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-slate-100">最接近命中的股票</div>
+                    <div className="mt-3 space-y-2">
+                      {strategyBoard.diagnostics.nearMisses.slice(0, 5).map((candidate) => (
+                        <div key={`near-miss-${candidate.symbol}`} className="rounded-2xl border border-white/10 bg-slate-950/20 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                              <div className="text-xs text-slate-500">{candidate.name}</div>
+                            </div>
+                            <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricTone(candidate.opportunityScore)}`}>
+                              接近分 {candidate.opportunityScore}
+                            </span>
+                          </div>
+                          <div className="mt-2 text-xs leading-5 text-slate-400">{candidate.summary}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

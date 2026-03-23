@@ -80,6 +80,12 @@ export type StructuredScannerFilters = {
   volumeTrend?: 'up' | 'down' | 'any';
 };
 
+export type StructuredScannerDiagnostics = {
+  breakdown: Array<{ label: string; dropped: number }>;
+  topFilter: string | null;
+  nearMisses: ScannerCandidate[];
+};
+
 export const scannerTemplates: ScannerTemplate[] = [
   {
     id: 'breakout',
@@ -532,26 +538,47 @@ export const runStructuredScanner = async (
       requestedScanned: 0,
       candidates: [] as ScannerCandidate[],
       summary: '当前结构化全量扫描已优先支持 A 股。',
+      diagnostics: {
+        breakdown: [],
+        topFilter: null,
+        nearMisses: [],
+      } as StructuredScannerDiagnostics,
     };
   }
 
   const fullUniverse = await _fetchFullAshareSnapshot();
-  const filteredBase = fullUniverse
-    .filter((item) => filters.includeST || !/\*?ST/i.test(item.name))
-    .filter((item) => (filters.prevCloseMin == null ? true : item.previousClose > filters.prevCloseMin))
-    .filter((item) => (filters.prevCloseMax == null ? true : item.previousClose < filters.prevCloseMax))
-    .filter((item) => (filters.turnoverMinCny == null ? true : item.turnoverCny > filters.turnoverMinCny))
-    .filter((item) => (filters.turnoverMaxCny == null ? true : item.turnoverCny < filters.turnoverMaxCny));
+  const breakdown: Array<{ label: string; dropped: number }> = [];
+
+  const applyStage = <T>(items: T[], label: string, predicate: (item: T) => boolean) => {
+    const next = items.filter(predicate);
+    breakdown.push({ label, dropped: Math.max(0, items.length - next.length) });
+    return next;
+  };
+
+  let filteredBase = fullUniverse;
+  filteredBase = applyStage(filteredBase, 'ST 过滤', (item) => filters.includeST || !/\*?ST/i.test((item as any).name));
+  filteredBase = applyStage(filteredBase, '昨收价下限', (item) => (filters.prevCloseMin == null ? true : (item as any).previousClose > filters.prevCloseMin));
+  filteredBase = applyStage(filteredBase, '昨收价上限', (item) => (filters.prevCloseMax == null ? true : (item as any).previousClose < filters.prevCloseMax));
+  filteredBase = applyStage(filteredBase, '成交额下限', (item) => (filters.turnoverMinCny == null ? true : (item as any).turnoverCny > filters.turnoverMinCny));
+  filteredBase = applyStage(filteredBase, '成交额上限', (item) => (filters.turnoverMaxCny == null ? true : (item as any).turnoverCny < filters.turnoverMaxCny));
 
   const rankedBy60 = [...filteredBase].sort((left, right) => right.return60Pct - left.return60Pct);
   const topRanked = filters.top60DayGainRank
     ? rankedBy60.slice(0, Math.max(20, filters.top60DayGainRank))
     : rankedBy60.slice(0, 300);
+  breakdown.push({
+    label: '60日涨幅排名',
+    dropped: Math.max(0, filteredBase.length - topRanked.length),
+  });
 
   const settled = await _runWithConcurrency(topRanked, 8, async (asset) => {
     const klines = await _fetchEastmoneyKlines(asset.symbol, 160);
-    if (!filters.includeNewListings && klines.length < 120) return null;
-    if (klines.length < 25) return null;
+    if (!filters.includeNewListings && klines.length < 120) {
+      return { candidate: null, failureReason: '新股过滤', nearMiss: null };
+    }
+    if (klines.length < 25) {
+      return { candidate: null, failureReason: '历史数据不足', nearMiss: null };
+    }
 
     const last20 = klines.slice(-20);
     const avgAmplitude20 = _avg(
@@ -560,35 +587,115 @@ export const runStructuredScanner = async (
         return denominator > 0 ? ((item.high - item.low) / denominator) * 100 : 0;
       }),
     );
-    if (filters.avgAmplitude20MinPct != null && (avgAmplitude20 ?? 0) < filters.avgAmplitude20MinPct) return null;
-    if (filters.avgAmplitude20MaxPct != null && (avgAmplitude20 ?? 999) > filters.avgAmplitude20MaxPct) return null;
+    if (filters.avgAmplitude20MinPct != null && (avgAmplitude20 ?? 0) < filters.avgAmplitude20MinPct) {
+      return {
+        candidate: null,
+        failureReason: '20日平均振幅下限',
+        nearMiss: createCandidate(
+          { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
+          scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+          clamp(52 + Math.min(12, (asset.return60Pct || 0) * 0.3), 0, 100),
+          clamp(35 + Math.max(0, (avgAmplitude20 || 0) * 1.8), 0, 100),
+          [
+            `近20日平均振幅 ${avgAmplitude20 ? _round(avgAmplitude20) : 'N/A'}%`,
+            `距离阈值 ${filters.avgAmplitude20MinPct}% 仍有差距`,
+          ],
+          '接近命中，但振幅条件略低于阈值。',
+          {
+            price: _round(asset.price),
+            changePercent: 0,
+            signalScore: 52,
+            rsi14: null,
+            relativeVolume: null,
+            annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
+            weekReturn: null,
+            monthReturn: _round(asset.return60Pct),
+          },
+        ),
+      };
+    }
+    if (filters.avgAmplitude20MaxPct != null && (avgAmplitude20 ?? 999) > filters.avgAmplitude20MaxPct) {
+      return { candidate: null, failureReason: '20日平均振幅上限', nearMiss: null };
+    }
 
     const closes = klines.map((item) => item.close);
     const currentClose = closes[closes.length - 1] || asset.price;
 
     if (filters.aboveMaDays && filters.aboveMaDays > 0) {
       const recent = closes.slice(-filters.aboveMaDays);
-      if (recent.length < filters.aboveMaDays) return null;
+      if (recent.length < filters.aboveMaDays) return { candidate: null, failureReason: '均线数据不足', nearMiss: null };
       const ma = recent.reduce((sum, value) => sum + value, 0) / recent.length;
-      if (currentClose < ma) return null;
+      if (currentClose < ma) {
+        return {
+          candidate: null,
+          failureReason: '站稳均线',
+          nearMiss: createCandidate(
+            { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
+            scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+            clamp(56 + Math.min(12, (asset.return60Pct || 0) * 0.35), 0, 100),
+            42,
+            [
+              `当前价 ${_round(currentClose)}，${filters.aboveMaDays}日均线 ${_round(ma)}`,
+              '价格已接近均线，但尚未确认站稳。',
+            ],
+            '接近命中，但均线站稳条件尚未满足。',
+            {
+              price: _round(currentClose),
+              changePercent: 0,
+              signalScore: 56,
+              rsi14: null,
+              relativeVolume: null,
+              annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
+              weekReturn: null,
+              monthReturn: _round(asset.return60Pct),
+            },
+          ),
+        };
+      }
     }
 
     const sidewaysDays = filters.sidewaysDays || 0;
     if (sidewaysDays > 0) {
       const recent = closes.slice(-sidewaysDays);
-      if (recent.length < sidewaysDays) return null;
+      if (recent.length < sidewaysDays) return { candidate: null, failureReason: '横盘数据不足', nearMiss: null };
       const maxClose = Math.max(...recent);
       const minClose = Math.min(...recent);
       const avgClose = recent.reduce((sum, value) => sum + value, 0) / recent.length;
       const rangePct = avgClose > 0 ? ((maxClose - minClose) / avgClose) * 100 : 999;
-      if (filters.sidewaysMaxRangePct != null && rangePct > filters.sidewaysMaxRangePct) return null;
+      if (filters.sidewaysMaxRangePct != null && rangePct > filters.sidewaysMaxRangePct) {
+        return {
+          candidate: null,
+          failureReason: '横盘振幅',
+          nearMiss: createCandidate(
+            { symbol: asset.symbol, name: asset.name, market: 'CN', assetClass: 'equity' },
+            scannerTemplates.find((item) => item.id === 'trend-follow') || scannerTemplates[3],
+            clamp(54 + Math.min(10, (asset.return60Pct || 0) * 0.3), 0, 100),
+            45,
+            [
+              `近${sidewaysDays}日区间振幅 ${_round(rangePct)}%`,
+              `目标阈值 ${filters.sidewaysMaxRangePct}%`,
+            ],
+            '接近命中，但横盘振幅略高于阈值。',
+            {
+              price: _round(currentClose),
+              changePercent: 0,
+              signalScore: 54,
+              rsi14: null,
+              relativeVolume: null,
+              annualizedVolatility: avgAmplitude20 ? _round(avgAmplitude20 * 4) : null,
+              weekReturn: null,
+              monthReturn: _round(asset.return60Pct),
+            },
+          ),
+        };
+      }
     }
 
     if (filters.volumeTrend && filters.volumeTrend !== 'any' && klines.length >= 2) {
       const lastVolume = klines[klines.length - 1].volume;
       const previousVolume = klines[klines.length - 2].volume;
-      if (filters.volumeTrend === 'up' && !(lastVolume > previousVolume)) return null;
-      if (filters.volumeTrend === 'down' && !(lastVolume < previousVolume)) return null;
+      if (filters.volumeTrend === 'up' && !(lastVolume > previousVolume)) return { candidate: null, failureReason: '今日成交量上升', nearMiss: null };
+      if (filters.volumeTrend === 'down' && !(lastVolume < previousVolume)) return { candidate: null, failureReason: '今日成交量下浮', nearMiss: null };
     }
 
     const opportunityScore = clamp(
@@ -602,7 +709,7 @@ export const runStructuredScanner = async (
     );
     const riskScore = clamp(30 + Math.max(0, (avgAmplitude20 || 0) * 2.2), 0, 100);
 
-    return createCandidate(
+    return { candidate: createCandidate(
       {
         symbol: asset.symbol,
         name: asset.name,
@@ -629,15 +736,39 @@ export const runStructuredScanner = async (
         weekReturn: null,
         monthReturn: _round(asset.return60Pct),
       },
-    );
+    ), failureReason: null, nearMiss: null };
   });
 
+  const failureCounts = new Map<string, number>();
+  const nearMisses: ScannerCandidate[] = [];
+
   const candidates = settled
-    .filter((entry): entry is PromiseFulfilledResult<ScannerCandidate | null> => entry.status === 'fulfilled')
+    .filter((entry): entry is PromiseFulfilledResult<{ candidate: ScannerCandidate | null; failureReason: string | null; nearMiss: ScannerCandidate | null }> => entry.status === 'fulfilled')
     .map((entry) => entry.value)
+    .map((item) => {
+      if (item.failureReason) {
+        failureCounts.set(item.failureReason, (failureCounts.get(item.failureReason) || 0) + 1);
+      }
+      if (item.nearMiss) {
+        nearMisses.push(item.nearMiss);
+      }
+      return item.candidate;
+    })
     .filter((item): item is ScannerCandidate => Boolean(item))
     .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
     .slice(0, limit);
+
+  failureCounts.forEach((dropped, label) => {
+    breakdown.push({ label, dropped });
+  });
+
+  const diagnostics: StructuredScannerDiagnostics = {
+    breakdown: breakdown.sort((left, right) => right.dropped - left.dropped),
+    topFilter: [...breakdown].sort((left, right) => right.dropped - left.dropped)[0]?.label || null,
+    nearMisses: nearMisses
+      .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
+      .slice(0, 20),
+  };
 
   return {
     scanned: filteredBase.length,
@@ -654,6 +785,7 @@ export const runStructuredScanner = async (
       filters.sidewaysMaxRangePct != null ? `区间<${filters.sidewaysMaxRangePct}%` : null,
       filters.volumeTrend === 'up' ? '今日放量' : filters.volumeTrend === 'down' ? '今日缩量' : null,
     ].filter(Boolean).join(' · '),
+    diagnostics,
   };
 };
 
