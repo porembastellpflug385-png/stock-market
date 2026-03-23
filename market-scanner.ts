@@ -273,6 +273,24 @@ const _EASTMONEY_HEADERS = {
   Referer: 'https://quote.eastmoney.com/',
 };
 
+const ASHARE_SNAPSHOT_TTL = 5 * 60 * 1000;
+
+type AshareSnapshotItem = {
+  symbol: string;
+  name: string;
+  market: 'CN';
+  assetClass: 'equity';
+  price: number;
+  turnoverCny: number;
+  amplitudePct: number;
+  previousClose: number;
+  return60Pct: number;
+};
+
+let _ashareSnapshotCache: AshareSnapshotItem[] = [];
+let _ashareSnapshotFetchedAt = 0;
+let _ashareSnapshotInFlight: Promise<AshareSnapshotItem[]> | null = null;
+
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
   id: 'trend-follow',
   name: '结构化全量扫描',
@@ -314,19 +332,9 @@ const _makeEastmoneySecid = (symbol: string) => {
   return `0.${code}`;
 };
 
-const _fetchFullAshareSnapshot = async () => {
+const _fetchFullAshareSnapshotFromSource = async (): Promise<AshareSnapshotItem[]> => {
   const pageSize = 200;
-  const all: Array<{
-    symbol: string;
-    name: string;
-    market: 'CN';
-    assetClass: 'equity';
-    price: number;
-    turnoverCny: number;
-    amplitudePct: number;
-    previousClose: number;
-    return60Pct: number;
-  }> = [];
+  const all: AshareSnapshotItem[] = [];
 
   let total = Infinity;
   for (let page = 1; page <= 30; page += 1) {
@@ -360,14 +368,49 @@ const _fetchFullAshareSnapshot = async () => {
     );
 
     if (all.length >= total) break;
-    if (diff.length < Math.min(pageSize, 100)) break;
+    if (diff.length < 100) break;
   }
 
-  const deduped = new Map<string, (typeof all)[number]>();
+  const deduped = new Map<string, AshareSnapshotItem>();
   all.forEach((item) => {
     deduped.set(item.symbol, item);
   });
   return [...deduped.values()];
+};
+
+const _fetchFullAshareSnapshot = async () => {
+  const now = Date.now();
+  if (_ashareSnapshotCache.length > 0 && now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL) {
+    return _ashareSnapshotCache;
+  }
+
+  if (_ashareSnapshotInFlight) {
+    return _ashareSnapshotInFlight;
+  }
+
+  _ashareSnapshotInFlight = (async () => {
+    try {
+      const fresh = await _fetchFullAshareSnapshotFromSource();
+      if (fresh.length > 0) {
+        _ashareSnapshotCache = fresh;
+        _ashareSnapshotFetchedAt = Date.now();
+        return fresh;
+      }
+      if (_ashareSnapshotCache.length > 0) {
+        return _ashareSnapshotCache;
+      }
+      return [];
+    } catch {
+      if (_ashareSnapshotCache.length > 0) {
+        return _ashareSnapshotCache;
+      }
+      return [];
+    } finally {
+      _ashareSnapshotInFlight = null;
+    }
+  })();
+
+  return _ashareSnapshotInFlight;
 };
 
 const _fetchEastmoneyKlines = async (symbol: string, count = 140) => {
