@@ -1032,8 +1032,9 @@ export function createApp() {
         if (maybeTicker) {
           try {
             const fallbackQuote = await yahooFinance.quote(maybeTicker);
-            if (fallbackQuote?.symbol) {
-              return res.json([mapQuoteToSearchResult(fallbackQuote)]);
+            const normalizedFallbackQuote = Array.isArray(fallbackQuote) ? fallbackQuote[0] : fallbackQuote;
+            if (normalizedFallbackQuote?.symbol) {
+              return res.json([mapQuoteToSearchResult(normalizedFallbackQuote)]);
             }
           } catch (fallbackError) {
             console.error("AI resolve quote failed:", fallbackError);
@@ -1597,6 +1598,14 @@ export function createApp() {
       const providedState = req.body?.state ? normalizeTrackingState(req.body.state) : null;
       const mode = String(req.body?.mode || 'full') === 'fast' ? 'fast' : 'full';
       const state = await runTrackingWorkflow(scope, 'manual', providedState || undefined, mode);
+      if (mode === 'fast') {
+        return res.json({
+          mode: 'fast',
+          latestReports: state.latestReports,
+          report: state.generatedReports?.[0] || null,
+          meta: (state as any).meta || null,
+        });
+      }
       res.json(state);
     } catch (error: any) {
       console.error("Error running tracking cycle:", error);

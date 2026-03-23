@@ -297,6 +297,34 @@ type ScannerHighQualityCandidate = {
   refinement: ScannerRefinement;
 };
 
+type ScannerStrategy = {
+  id: string;
+  name: string;
+  description: string;
+  templateId: ScannerTemplateId;
+  markets: ScannerMarket[];
+  minOpportunityScore: number;
+  maxRiskScore: number;
+  minSignalScore: number;
+  minRelativeVolume: number;
+  rsiMin: number;
+  rsiMax: number;
+  minWeekReturn: number;
+  minMonthReturn: number;
+  assetClasses: Array<ScannerCandidate['assetClass']>;
+  actionBiases: Array<ScannerCandidate['actionBias']>;
+  refreshSeconds: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StrategyBoardState = {
+  strategyId: string | null;
+  scannedAt: string | null;
+  scanned: number;
+  candidates: ScannerCandidate[];
+};
+
 type ProviderConfig = {
   baseUrl: string;
   apiKey: string;
@@ -316,6 +344,7 @@ const trackingWatchlistStorageKey = 'market-analyzer-tracking-watchlist';
 const trackingOverviewStorageKey = 'market-analyzer-tracking-overview';
 const scannerSnapshotsStorageKey = 'market-analyzer-scanner-snapshots';
 const candidatePoolStorageKey = 'market-analyzer-candidate-pool';
+const scannerStrategyPoolStorageKey = 'market-analyzer-scanner-strategy-pool';
 const defaultProviderConfig: ProviderConfig = {
   baseUrl: '',
   apiKey: '',
@@ -414,6 +443,35 @@ const formatDateTime = (value?: string | null) => {
     minute: '2-digit',
   });
 };
+
+const createPrimaryAshareScannerStrategy = (): ScannerStrategy => ({
+  id: 'strategy-cn-momentum-001',
+  name: 'A股强势横盘观察池',
+  description:
+    '只扫描 A 股（含创业板）；剔除 ST，剔除新股；昨日收盘价大于 5 元；日成交额大于 2 亿；近 20 日平均日内振幅大于 4%；近 60 日涨幅排名前 100 名；当前股价站稳 20 日均线；近 5 日股价横盘震荡。当前引擎已结构化执行：A股范围、趋势延续模板、机会分下限、风险分上限、信号分下限、量比下限、RSI 区间、近月收益下限。其余条件先保存在策略说明中，后续再扩成硬过滤字段。',
+  templateId: 'trend-follow',
+  markets: ['CN'],
+  minOpportunityScore: 75,
+  maxRiskScore: 55,
+  minSignalScore: 62,
+  minRelativeVolume: 1,
+  rsiMin: 45,
+  rsiMax: 68,
+  minWeekReturn: -2,
+  minMonthReturn: 6,
+  assetClasses: ['equity'],
+  actionBiases: ['watch', 'prepare'],
+  refreshSeconds: 60,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
+
+const createDefaultScannerStrategy = (): ScannerStrategy => ({
+  ...createPrimaryAshareScannerStrategy(),
+  id: `strategy-${Date.now()}`,
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+});
 
 const metricTone = (score: number) =>
   score >= 75 ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-300' :
@@ -632,6 +690,36 @@ const readStoredCandidatePool = (): CandidatePoolItem[] => {
 
 const persistCandidatePool = (items: CandidatePoolItem[]) => {
   window.localStorage.setItem(candidatePoolStorageKey, JSON.stringify(items.slice(0, 80)));
+};
+
+const readStoredScannerStrategies = (): ScannerStrategy[] => {
+  try {
+    const raw = window.localStorage.getItem(scannerStrategyPoolStorageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistScannerStrategies = (strategies: ScannerStrategy[]) => {
+  window.localStorage.setItem(scannerStrategyPoolStorageKey, JSON.stringify(strategies.slice(0, 30)));
+};
+
+const applyScannerStrategyFilters = (candidate: ScannerCandidate, strategy: ScannerStrategy) => {
+  if (candidate.opportunityScore < strategy.minOpportunityScore) return false;
+  if (candidate.riskScore > strategy.maxRiskScore) return false;
+  if ((candidate.metrics.signalScore ?? 0) < strategy.minSignalScore) return false;
+  if ((candidate.metrics.relativeVolume ?? 0) < strategy.minRelativeVolume) return false;
+  if ((candidate.metrics.rsi14 ?? 0) < strategy.rsiMin || (candidate.metrics.rsi14 ?? 0) > strategy.rsiMax) return false;
+  if ((candidate.metrics.weekReturn ?? -999) < strategy.minWeekReturn) return false;
+  if ((candidate.metrics.monthReturn ?? -999) < strategy.minMonthReturn) return false;
+  if (strategy.assetClasses.length > 0 && !strategy.assetClasses.includes(candidate.assetClass)) return false;
+  if (strategy.actionBiases.length > 0 && !strategy.actionBiases.includes(candidate.actionBias)) return false;
+  return true;
 };
 
 const normalizeSearchResults = (payload: any) => {
@@ -1115,6 +1203,12 @@ function App() {
   const [scannerRefinements, setScannerRefinements] = useState<ScannerRefinement[]>([]);
   const [scannerSnapshots, setScannerSnapshots] = useState<ScannerSnapshot[]>([]);
   const [candidatePool, setCandidatePool] = useState<CandidatePoolItem[]>([]);
+  const [scannerStrategies, setScannerStrategies] = useState<ScannerStrategy[]>([]);
+  const [editingScannerStrategy, setEditingScannerStrategy] = useState<ScannerStrategy>(createDefaultScannerStrategy());
+  const [activeScannerStrategyId, setActiveScannerStrategyId] = useState<string | null>(null);
+  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, candidates: [] });
+  const [strategyBoardLoading, setStrategyBoardLoading] = useState(false);
+  const [strategyBoardAutoRefresh, setStrategyBoardAutoRefresh] = useState(true);
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
   const [scannerValidatedSnapshots, setScannerValidatedSnapshots] = useState<ScannerValidatedSnapshot[]>([]);
   const [scannerValidationSummary, setScannerValidationSummary] = useState<ScannerValidationSummary | null>(null);
@@ -1151,6 +1245,18 @@ function App() {
     setTrackingOverview(readStoredTrackingOverview());
     setScannerSnapshots(readStoredScannerSnapshots());
     setCandidatePool(readStoredCandidatePool());
+    const storedStrategies = readStoredScannerStrategies();
+    if (storedStrategies.length > 0) {
+      setScannerStrategies(storedStrategies);
+      setActiveScannerStrategyId(storedStrategies[0].id);
+      setEditingScannerStrategy(storedStrategies[0]);
+    } else {
+      const initialStrategy = createDefaultScannerStrategy();
+      setScannerStrategies([initialStrategy]);
+      setActiveScannerStrategyId(initialStrategy.id);
+      setEditingScannerStrategy(initialStrategy);
+      persistScannerStrategies([initialStrategy]);
+    }
   }, []);
 
   useEffect(() => {
@@ -1265,6 +1371,25 @@ function App() {
 
     runValidation();
   }, [scannerSnapshots]);
+
+  useEffect(() => {
+    const strategy = scannerStrategies.find((item) => item.id === activeScannerStrategyId);
+    if (strategy) {
+      setEditingScannerStrategy(strategy);
+    }
+  }, [activeScannerStrategyId, scannerStrategies]);
+
+  useEffect(() => {
+    if (activeView !== 'scanner' || !strategyBoardAutoRefresh || !activeScannerStrategyId) {
+      return;
+    }
+    const strategy = scannerStrategies.find((item) => item.id === activeScannerStrategyId);
+    if (!strategy) return;
+    const timer = window.setInterval(() => {
+      runScannerStrategyBoard(strategy);
+    }, Math.max(15, strategy.refreshSeconds) * 1000);
+    return () => window.clearInterval(timer);
+  }, [activeView, strategyBoardAutoRefresh, activeScannerStrategyId, scannerStrategies]);
 
   const hasCustomProvider = false;
 
@@ -1610,8 +1735,29 @@ function App() {
     setTrackingError(null);
     setTrackingStatus(null);
     try {
-      const overview = readStoredTrackingOverview();
-      commitTrackingOverview(overview);
+      const localOverview = readStoredTrackingOverview();
+      let nextOverview = localOverview;
+      try {
+        const res = await fetch('/api/tracking/overview');
+        const payload = await readApiPayload(res);
+        if (res.ok) {
+          const serverOverview = normalizeTrackingOverview(payload as TrackingOverview);
+          nextOverview = normalizeTrackingOverview({
+            ...localOverview,
+            watchlist: serverOverview.watchlist.length ? serverOverview.watchlist : localOverview.watchlist,
+            strategies: serverOverview.strategies.length ? serverOverview.strategies : localOverview.strategies,
+            portfolios: serverOverview.portfolios.length ? serverOverview.portfolios : localOverview.portfolios,
+            latestReports: serverOverview.latestReports.length ? serverOverview.latestReports : localOverview.latestReports,
+            validations: serverOverview.validations.length ? serverOverview.validations : localOverview.validations,
+            generatedReports: serverOverview.generatedReports.length ? serverOverview.generatedReports : localOverview.generatedReports,
+            settings: localOverview.settings,
+            runLogs: localOverview.runLogs,
+          });
+        }
+      } catch {
+        nextOverview = localOverview;
+      }
+      commitTrackingOverview(nextOverview);
     } catch (trackingLoadError: any) {
       setTrackingError(trackingLoadError.message || '加载跟踪系统失败');
     } finally {
@@ -1628,6 +1774,144 @@ function App() {
       }
       return [...current, market];
     });
+  };
+
+  const updateEditingScannerStrategy = <K extends keyof ScannerStrategy>(key: K, value: ScannerStrategy[K]) => {
+    setEditingScannerStrategy((current) => ({
+      ...current,
+      [key]: value,
+      updatedAt: new Date().toISOString(),
+    }));
+  };
+
+  const toggleStrategyMarket = (market: ScannerMarket) => {
+    setEditingScannerStrategy((current) => {
+      const exists = current.markets.includes(market);
+      const nextMarkets = exists
+        ? current.markets.filter((item) => item !== market)
+        : [...current.markets, market];
+      return {
+        ...current,
+        markets: nextMarkets.length ? nextMarkets : [market],
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  };
+
+  const toggleStrategyAssetClass = (assetClass: ScannerCandidate['assetClass']) => {
+    setEditingScannerStrategy((current) => {
+      const exists = current.assetClasses.includes(assetClass);
+      return {
+        ...current,
+        assetClasses: exists
+          ? current.assetClasses.filter((item) => item !== assetClass)
+          : [...current.assetClasses, assetClass],
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  };
+
+  const toggleStrategyActionBias = (actionBias: ScannerCandidate['actionBias']) => {
+    setEditingScannerStrategy((current) => {
+      const exists = current.actionBiases.includes(actionBias);
+      return {
+        ...current,
+        actionBiases: exists
+          ? current.actionBiases.filter((item) => item !== actionBias)
+          : [...current.actionBiases, actionBias],
+        updatedAt: new Date().toISOString(),
+      };
+    });
+  };
+
+  const saveScannerStrategy = () => {
+    const trimmedName = editingScannerStrategy.name.trim();
+    if (!trimmedName) {
+      setScannerError('请先填写策略名称。');
+      return;
+    }
+    const nextStrategy: ScannerStrategy = {
+      ...editingScannerStrategy,
+      name: trimmedName,
+      description: editingScannerStrategy.description.trim(),
+      updatedAt: new Date().toISOString(),
+      markets: editingScannerStrategy.markets.length ? editingScannerStrategy.markets : ['CN'],
+    };
+    const nextStrategies = [
+      nextStrategy,
+      ...scannerStrategies.filter((item) => item.id !== nextStrategy.id),
+    ].slice(0, 30);
+    setScannerStrategies(nextStrategies);
+    persistScannerStrategies(nextStrategies);
+    setActiveScannerStrategyId(nextStrategy.id);
+    setEditingScannerStrategy(nextStrategy);
+    setScannerError(null);
+  };
+
+  const createScannerStrategy = () => {
+    const next = createDefaultScannerStrategy();
+    setEditingScannerStrategy(next);
+    setActiveScannerStrategyId(next.id);
+  };
+
+  const removeScannerStrategy = (strategyId: string) => {
+    const nextStrategies = scannerStrategies.filter((item) => item.id !== strategyId);
+    setScannerStrategies(nextStrategies);
+    persistScannerStrategies(nextStrategies);
+    if (nextStrategies.length > 0) {
+      setActiveScannerStrategyId(nextStrategies[0].id);
+      setEditingScannerStrategy(nextStrategies[0]);
+    } else {
+      const next = createDefaultScannerStrategy();
+      setActiveScannerStrategyId(next.id);
+      setEditingScannerStrategy(next);
+      setScannerStrategies([next]);
+      persistScannerStrategies([next]);
+    }
+  };
+
+  const loadScannerStrategy = (strategyId: string) => {
+    const strategy = scannerStrategies.find((item) => item.id === strategyId);
+    if (!strategy) return;
+    setActiveScannerStrategyId(strategy.id);
+    setEditingScannerStrategy(strategy);
+  };
+
+  const runScannerStrategyBoard = async (strategy?: ScannerStrategy) => {
+    const currentStrategy = strategy || scannerStrategies.find((item) => item.id === activeScannerStrategyId) || editingScannerStrategy;
+    if (!currentStrategy) return;
+    setStrategyBoardLoading(true);
+    setScannerError(null);
+    try {
+      const res = await fetch('/api/scanner/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          templateId: currentStrategy.templateId,
+          markets: currentStrategy.markets,
+          limit: 80,
+        }),
+      });
+      const payload = await readApiPayload(res);
+      if (!res.ok) {
+        throw new Error(getPayloadError(payload, '策略池扫描失败'));
+      }
+      const scannedCandidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+      const filteredCandidates = scannedCandidates
+        .filter((item) => applyScannerStrategyFilters(item, currentStrategy))
+        .sort((left, right) => right.opportunityScore - left.opportunityScore || left.riskScore - right.riskScore)
+        .slice(0, 20);
+      setStrategyBoard({
+        strategyId: currentStrategy.id,
+        scannedAt: new Date().toISOString(),
+        scanned: Number(payload.scanned || 0),
+        candidates: filteredCandidates,
+      });
+    } catch (strategyBoardError: any) {
+      setScannerError(strategyBoardError.message || '策略池扫描失败');
+    } finally {
+      setStrategyBoardLoading(false);
+    }
   };
 
   const runScanner = async () => {
@@ -2026,7 +2310,9 @@ function App() {
         ].slice(0, 30);
         nextStatus = `已完成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}完整运行，${changedPortfolios.length} 个策略发生更新，新增 ${tradeDelta} 笔模拟交易。`;
       } else {
-        nextStatus = `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`;
+        nextStatus = payload?.meta?.usedCachedReports
+          ? `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}（缓存版）。本次实时抓取失败，已用上一次成功结果兜底输出。`
+          : `已生成${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'}，可在下方报告中心下载最新报告。`;
       }
       commitTrackingOverview(overview);
       setTrackingStatus(nextStatus);
@@ -2149,6 +2435,8 @@ function App() {
   const latestRunLogs = trackingOverview?.runLogs.slice(0, 5) || [];
   const watchlist = trackingOverview?.watchlist || [];
   const trackingExecutionMode = trackingOverview?.settings.executionMode || 'daily';
+  const latestCronReport =
+    (trackingOverview?.generatedReports || []).find((item) => item.trigger === 'cron') || null;
   const sortedWatchlist = [...watchlist].sort(
     (left, right) => right.priority - left.priority || left.addedAt.localeCompare(right.addedAt),
   );
@@ -2159,6 +2447,8 @@ function App() {
   );
   const latestScannerSnapshot = scannerSnapshots[0] || null;
   const latestValidatedSnapshot = scannerValidatedSnapshots[0] || null;
+  const activeScannerStrategy =
+    scannerStrategies.find((item) => item.id === activeScannerStrategyId) || null;
   const scannerHorizonSummaries = scannerValidationSummary?.horizons
     ? ([
         ['1日', scannerValidationSummary.horizons['1日']],
@@ -2337,6 +2627,187 @@ function App() {
           {scannerError}
         </div>
       )}
+
+      <section className="mb-8 grid gap-4 xl:grid-cols-[0.92fr_1.08fr]">
+        <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Strategy Pool</p>
+              <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-50">策略池</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                把扫描条件保存成策略，按策略约定的扫描范围和阈值全量扫描，再把结果推进到实时看板。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={createScannerStrategy}
+              className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white"
+            >
+              新建策略
+            </button>
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+            <div className="space-y-2">
+              {scannerStrategies.map((strategy) => (
+                <button
+                  key={strategy.id}
+                  type="button"
+                  onClick={() => loadScannerStrategy(strategy.id)}
+                  className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    activeScannerStrategyId === strategy.id
+                      ? 'border-sky-300/20 bg-sky-300/10'
+                      : 'border-white/10 bg-white/5 hover:bg-white/10'
+                  }`}
+                >
+                  <div className="font-semibold text-slate-100">{strategy.name}</div>
+                  <div className="mt-1 text-xs text-slate-500">
+                    {strategy.markets.join(' / ')} · {scannerTemplates.find((item) => item.id === strategy.templateId)?.name || strategy.templateId}
+                  </div>
+                </button>
+              ))}
+            </div>
+
+            <div className="rounded-[26px] border border-white/8 bg-slate-950/30 p-4">
+              <div className="grid gap-3">
+                <input
+                  value={editingScannerStrategy.name}
+                  onChange={(event) => updateEditingScannerStrategy('name', event.target.value)}
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                  placeholder="策略名称"
+                />
+                <textarea
+                  value={editingScannerStrategy.description}
+                  onChange={(event) => updateEditingScannerStrategy('description', event.target.value)}
+                  className="min-h-[80px] rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+                  placeholder="策略说明，例如：只扫描A股趋势延续、机会分高于75的股票"
+                />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <select
+                    value={editingScannerStrategy.templateId}
+                    onChange={(event) => updateEditingScannerStrategy('templateId', event.target.value as ScannerTemplateId)}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
+                  >
+                    {scannerTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>{template.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min={15}
+                    max={600}
+                    step={15}
+                    value={editingScannerStrategy.refreshSeconds}
+                    onChange={(event) => updateEditingScannerStrategy('refreshSeconds', Math.max(15, Number(event.target.value || 60)))}
+                    className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none"
+                    placeholder="刷新秒数"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {scannerMarketOptions.map((market) => (
+                    <button
+                      key={`pool-market-${market.value}`}
+                      type="button"
+                      onClick={() => toggleStrategyMarket(market.value)}
+                      className={`rounded-2xl px-3 py-2 text-xs font-semibold transition ${
+                        editingScannerStrategy.markets.includes(market.value)
+                          ? 'border border-sky-300/20 bg-sky-300/10 text-sky-100'
+                          : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      {market.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <input type="number" value={editingScannerStrategy.minOpportunityScore} onChange={(event) => updateEditingScannerStrategy('minOpportunityScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低机会分" />
+                  <input type="number" value={editingScannerStrategy.maxRiskScore} onChange={(event) => updateEditingScannerStrategy('maxRiskScore', Number(event.target.value || 100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最高风险分" />
+                  <input type="number" value={editingScannerStrategy.minSignalScore} onChange={(event) => updateEditingScannerStrategy('minSignalScore', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低信号分" />
+                </div>
+                <div className="grid gap-3 md:grid-cols-4">
+                  <input type="number" step="0.1" value={editingScannerStrategy.minRelativeVolume} onChange={(event) => updateEditingScannerStrategy('minRelativeVolume', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低量比" />
+                  <input type="number" value={editingScannerStrategy.rsiMin} onChange={(event) => updateEditingScannerStrategy('rsiMin', Number(event.target.value || 0))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="RSI下限" />
+                  <input type="number" value={editingScannerStrategy.rsiMax} onChange={(event) => updateEditingScannerStrategy('rsiMax', Number(event.target.value || 100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="RSI上限" />
+                  <input type="number" step="0.1" value={editingScannerStrategy.minMonthReturn} onChange={(event) => updateEditingScannerStrategy('minMonthReturn', Number(event.target.value || -100))} className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-100 outline-none" placeholder="最低月收益%" />
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={saveScannerStrategy} className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white">保存策略</button>
+                  <button type="button" onClick={() => runScannerStrategyBoard(editingScannerStrategy)} disabled={strategyBoardLoading} className="rounded-2xl border border-emerald-300/20 bg-emerald-300/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:bg-emerald-300/15 disabled:opacity-50">
+                    {strategyBoardLoading ? '看板刷新中...' : '运行策略看板'}
+                  </button>
+                  {activeScannerStrategyId && (
+                    <button type="button" onClick={() => removeScannerStrategy(activeScannerStrategyId)} className="rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 py-2 text-sm font-semibold text-rose-100 transition hover:bg-rose-300/15">
+                      删除策略
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-[32px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,23,42,0.94),rgba(2,6,23,0.98))] p-6 text-white shadow-[0_20px_70px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.26em] text-slate-500">Live Board</p>
+              <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-50">策略实时看板</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                选定策略后，系统会按该策略的扫描范围和条件持续刷新结果，用来看这些股票的价格、涨跌和机会分变化。
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setStrategyBoardAutoRefresh((current) => !current)}
+                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
+                  strategyBoardAutoRefresh
+                    ? 'border border-emerald-300/20 bg-emerald-300/10 text-emerald-100'
+                    : 'border border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                {strategyBoardAutoRefresh ? '自动刷新已开启' : '开启自动刷新'}
+              </button>
+              <button
+                type="button"
+                onClick={() => runScannerStrategyBoard()}
+                disabled={strategyBoardLoading || !activeScannerStrategy}
+                className="rounded-2xl border border-sky-300/20 bg-sky-100 px-4 py-2 text-sm font-semibold text-slate-950 transition hover:bg-white disabled:opacity-50"
+              >
+                {strategyBoardLoading ? '刷新中...' : '立即刷新'}
+              </button>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-4">
+            <InfoCard title="当前策略" value={activeScannerStrategy?.name || '未选择'} subtitle={activeScannerStrategy ? `${activeScannerStrategy.markets.join(' / ')} · ${activeScannerStrategy.refreshSeconds}s` : '先保存策略'} icon={<BrainCircuit className="h-4 w-4" />} />
+            <InfoCard title="扫描样本" value={`${strategyBoard.scanned}`} subtitle="本轮实际扫描标的数" icon={<Search className="h-4 w-4" />} />
+            <InfoCard title="命中数量" value={`${strategyBoard.candidates.length}`} subtitle="符合策略条件的股票" icon={<TrendingUp className="h-4 w-4" />} />
+            <InfoCard title="最近刷新" value={strategyBoard.scannedAt ? formatDateTime(strategyBoard.scannedAt) : '未运行'} subtitle={strategyBoardAutoRefresh ? '自动刷新开启' : '手动刷新'} icon={<RefreshCw className="h-4 w-4" />} />
+          </div>
+          <div className="mt-5 space-y-3">
+            {strategyBoard.candidates.length > 0 ? strategyBoard.candidates.slice(0, 12).map((candidate) => (
+              <div key={`strategy-board-${candidate.symbol}`} className="rounded-2xl border border-white/8 bg-white/5 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <div className="font-semibold text-slate-100">{candidate.symbol}</div>
+                    <div className="text-xs text-slate-500">{candidate.name} · {candidate.market} · {candidate.templateName}</div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 text-xs font-semibold">
+                    <span className={`rounded-full border px-2.5 py-1 ${metricTone(candidate.opportunityScore)}`}>机会分 {candidate.opportunityScore}</span>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-300">价格 {formatNumber(candidate.metrics.price)}</span>
+                    <span className={`rounded-full border px-2.5 py-1 ${metricTone(candidate.metrics.changePercent > 0 ? 72 : 36)}`}>当日 {formatNumber(candidate.metrics.changePercent)}%</span>
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-slate-300">月度 {formatNumber(candidate.metrics.monthReturn)}%</span>
+                  </div>
+                </div>
+                <div className="mt-3 text-sm leading-6 text-slate-300">{candidate.summary}</div>
+              </div>
+            )) : (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/4 p-5 text-sm text-slate-400">
+                运行一个策略后，这里会实时展示符合条件股票的看板。
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
 
       <section className="grid gap-4 lg:grid-cols-[1.02fr_0.98fr]">
         <div className="rounded-[32px] border border-white/10 bg-white/6 p-6 shadow-[0_20px_70px_rgba(0,0,0,0.32)] backdrop-blur-2xl">
@@ -2696,6 +3167,22 @@ function App() {
               {trackingExecutionMode === 'daily'
                 ? '当前设为日频：如果 Vercel cron 已配置且 CRON_SECRET 有效，系统会每天自动跑一轮完整更新。'
                 : '当前设为手动频率：模拟盘只会在你主动点击“更新模拟盘（完整）”时推进。'}
+            </div>
+            <div className="mt-3 rounded-2xl border border-white/8 bg-slate-950/30 p-3 text-xs leading-6 text-slate-300">
+              <div className="font-semibold text-slate-100">自动运行状态</div>
+              {latestCronReport ? (
+                <div className="mt-2">
+                  最近一次自动运行：{formatDateTime(latestCronReport.generatedAt)} · {latestCronReport.title}
+                </div>
+              ) : trackingExecutionMode === 'daily' ? (
+                <div className="mt-2 text-amber-200">
+                  还没有检测到自动运行记录。请确认 Vercel 已部署 `vercel.json` 的 cron 配置，并设置了 `CRON_SECRET`。
+                </div>
+              ) : (
+                <div className="mt-2 text-slate-400">
+                  当前为手动频率，系统不会自动跑完整更新。
+                </div>
+              )}
             </div>
           </div>
           <div className="mt-5 rounded-2xl border border-white/8 bg-white/5 p-4 text-sm leading-6 text-slate-300">

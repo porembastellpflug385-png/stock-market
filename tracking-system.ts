@@ -624,6 +624,7 @@ export const runTrackingCycle = async ({
   const nextReports: TrackingReportRecord[] = [];
   const nextValidations = [...state.validations];
   const failedSymbols: Array<{ symbol: string; error: string }> = [];
+  let usedCachedReports = false;
   const settledReports = await runWithConcurrency(state.watchlist, 3, async (asset) => {
     const bundle = await withTimeout(fetchAsset(asset.symbol), 12000, `${asset.symbol} 行情抓取`);
     const analysis = await withTimeout(
@@ -664,6 +665,32 @@ export const runTrackingCycle = async ({
   });
 
   if (nextReports.length === 0) {
+    if (mode === 'fast' && state.latestReports.length > 0) {
+      usedCachedReports = true;
+      state.generatedReports.unshift({
+        id: `${scope}-${Date.now()}`,
+        scope,
+        generatedAt: new Date().toISOString(),
+        title: `${scope === 'daily' ? '日报' : scope === 'weekly' ? '周报' : '月报'} · ${new Date().toLocaleDateString('zh-CN')}（快速版/缓存）`,
+        markdown: [
+          '> ⚠️ 本次未能实时拉取任何标的，以下报告基于上一次成功生成的跟踪结果缓存输出。',
+          '',
+          buildSummaryReport(scope, state.latestReports, state.portfolios, state.validations, failedSymbols),
+        ].join('\n'),
+        trigger,
+      });
+      state.generatedReports = state.generatedReports.slice(0, 60);
+      if (persist) {
+        writeState(state);
+      }
+      return {
+        ...state,
+        meta: {
+          usedCachedReports: true,
+          failedSymbols,
+        },
+      } as TrackingState & { meta: { usedCachedReports: boolean; failedSymbols: Array<{ symbol: string; error: string }> } };
+    }
     const details = failedSymbols.slice(0, 5).map((item) => `${item.symbol}: ${item.error}`).join('；');
     throw new Error(details ? `本次日报生成失败，全部标的处理异常。${details}` : '本次日报生成失败，未能处理任何标的。');
   }
@@ -695,5 +722,11 @@ export const runTrackingCycle = async ({
   if (persist) {
     writeState(state);
   }
-  return state;
+  return {
+    ...state,
+    meta: {
+      usedCachedReports,
+      failedSymbols,
+    },
+  } as TrackingState & { meta: { usedCachedReports: boolean; failedSymbols: Array<{ symbol: string; error: string }> } };
 };
