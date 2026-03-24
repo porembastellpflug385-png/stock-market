@@ -90,6 +90,14 @@ export type StructuredScannerDiagnostics = {
   nearMisses: ScannerCandidate[];
 };
 
+export type ScannerUniverseMeta = {
+  source: 'live' | 'cache';
+  fetchedAt: string | null;
+  coverageGroups: string[];
+  estimatedTotal: number;
+  coveredCount: number;
+};
+
 export const scannerTemplates: ScannerTemplate[] = [
   {
     id: 'breakout',
@@ -289,7 +297,7 @@ type AshareSnapshotItem = {
 
 let _ashareSnapshotCache: AshareSnapshotItem[] = [];
 let _ashareSnapshotFetchedAt = 0;
-let _ashareSnapshotInFlight: Promise<AshareSnapshotItem[]> | null = null;
+let _ashareSnapshotInFlight: Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> | null = null;
 
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
   id: 'trend-follow',
@@ -299,11 +307,14 @@ const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
 };
 
 const _ASHARE_MARKET_GROUPS = [
-  'm:0+t:6',   // 深市主板
-  'm:0+t:80',  // 创业板
-  'm:1+t:2',   // 沪市主板
-  'm:1+t:23',  // 科创板
+  { fs: 'm:0+t:6', label: '深市主板' },
+  { fs: 'm:0+t:13', label: '中小板' },
+  { fs: 'm:0+t:80', label: '创业板' },
+  { fs: 'm:1+t:2', label: '沪市主板' },
+  { fs: 'm:1+t:23', label: '科创板' },
 ];
+
+const _ASHARE_COMBINED_FS = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
 
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
 
@@ -339,58 +350,72 @@ const _makeEastmoneySecid = (symbol: string) => {
   return `0.${code}`;
 };
 
-const _fetchFullAshareSnapshotFromSource = async (): Promise<AshareSnapshotItem[]> => {
+const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number; coverageGroups: string[] }> => {
   const pageSize = 200;
   const all: AshareSnapshotItem[] = [];
+  let estimatedTotal = 0;
 
-  for (const fs of _ASHARE_MARKET_GROUPS) {
-    let total = Infinity;
-    for (let page = 1; page <= 40; page += 1) {
-      const response = await _safeFetch(
-        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(fs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
-        _EASTMONEY_HEADERS,
-      );
-      const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-      total = Number(response?.data?.total || total);
-      if (diff.length === 0) break;
-
-      all.push(
-        ...diff
-          .filter((item) => item?.f12 && item?.f14)
-          .map((item) => {
-            const code = String(item.f12);
-            const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
-            const symbol = `${code}${suffix}`;
-            return {
-              symbol,
-              name: String(item.f14 || symbol),
-              market: 'CN' as const,
-              assetClass: 'equity' as const,
-              price: Number(item.f2 || 0),
-              turnoverCny: Number(item.f6 || 0),
-              amplitudePct: Number(item.f7 || 0),
-              previousClose: Number(item.f18 || 0),
-              return60Pct: Number(item.f24 || 0),
-            };
-          }),
-      );
-
-      if (page * pageSize >= total) break;
-      if (diff.length < pageSize / 2) break;
+  for (let page = 1; page <= 40; page += 1) {
+    const response = await _safeFetch(
+      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(_ASHARE_COMBINED_FS)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+      _EASTMONEY_HEADERS,
+    );
+    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+    const total = Number(response?.data?.total || 0);
+    if (page === 1 && Number.isFinite(total)) {
+      estimatedTotal = total;
     }
+    if (diff.length === 0) break;
+
+    all.push(
+      ...diff
+        .filter((item) => item?.f12 && item?.f14)
+        .map((item) => {
+          const code = String(item.f12);
+          const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+          const symbol = `${code}${suffix}`;
+          return {
+            symbol,
+            name: String(item.f14 || symbol),
+            market: 'CN' as const,
+            assetClass: 'equity' as const,
+            price: Number(item.f2 || 0),
+            turnoverCny: Number(item.f6 || 0),
+            amplitudePct: Number(item.f7 || 0),
+            previousClose: Number(item.f18 || 0),
+            return60Pct: Number(item.f24 || 0),
+          };
+        }),
+    );
+
+    if (total > 0 && page * pageSize >= total) break;
+    if (diff.length < pageSize) break;
   }
 
   const deduped = new Map<string, AshareSnapshotItem>();
   all.forEach((item) => {
     deduped.set(item.symbol, item);
   });
-  return [...deduped.values()];
+  return {
+    items: [...deduped.values()],
+    estimatedTotal: estimatedTotal || deduped.size,
+    coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+  };
 };
 
-const _fetchFullAshareSnapshot = async () => {
+const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> => {
   const now = Date.now();
   if (_ashareSnapshotCache.length > 0 && now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL) {
-    return _ashareSnapshotCache;
+    return {
+      items: _ashareSnapshotCache,
+      meta: {
+        source: 'cache',
+        fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
+        coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+        estimatedTotal: _ashareSnapshotCache.length,
+        coveredCount: _ashareSnapshotCache.length,
+      },
+    };
   }
 
   if (_ashareSnapshotInFlight) {
@@ -400,20 +425,65 @@ const _fetchFullAshareSnapshot = async () => {
   _ashareSnapshotInFlight = (async () => {
     try {
       const fresh = await _fetchFullAshareSnapshotFromSource();
-      if (fresh.length > 0) {
-        _ashareSnapshotCache = fresh;
+      if (fresh.items.length > 0) {
+        _ashareSnapshotCache = fresh.items;
         _ashareSnapshotFetchedAt = Date.now();
-        return fresh;
+        return {
+          items: fresh.items,
+          meta: {
+            source: 'live',
+            fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
+            coverageGroups: fresh.coverageGroups,
+            estimatedTotal: fresh.estimatedTotal,
+            coveredCount: fresh.items.length,
+          },
+        };
       }
       if (_ashareSnapshotCache.length > 0) {
-        return _ashareSnapshotCache;
+        return {
+          items: _ashareSnapshotCache,
+          meta: {
+            source: 'cache',
+            fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
+            coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+            estimatedTotal: _ashareSnapshotCache.length,
+            coveredCount: _ashareSnapshotCache.length,
+          },
+        };
       }
-      return [];
+      return {
+        items: [],
+        meta: {
+          source: 'live',
+          fetchedAt: null,
+          coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+          estimatedTotal: 0,
+          coveredCount: 0,
+        },
+      };
     } catch {
       if (_ashareSnapshotCache.length > 0) {
-        return _ashareSnapshotCache;
+        return {
+          items: _ashareSnapshotCache,
+          meta: {
+            source: 'cache',
+            fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
+            coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+            estimatedTotal: _ashareSnapshotCache.length,
+            coveredCount: _ashareSnapshotCache.length,
+          },
+        };
       }
-      return [];
+      return {
+        items: [],
+        meta: {
+          source: 'live',
+          fetchedAt: null,
+          coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+          estimatedTotal: 0,
+          coveredCount: 0,
+        },
+      };
     } finally {
       _ashareSnapshotInFlight = null;
     }
@@ -505,7 +575,8 @@ export const runNaturalLanguageCnScan = async (
     };
   }
 
-  const fullUniverse = await _fetchFullAshareSnapshot();
+  const snapshot = await _fetchFullAshareSnapshot();
+  const fullUniverse = snapshot.items;
   if (!fullUniverse.length) {
     throw new Error('A股全量快照获取失败，请稍后重试。');
   }
@@ -622,6 +693,7 @@ export const runNaturalLanguageCnScan = async (
     scanned: filteredBase.length,
     requestedScanned: fullUniverse.length,
     candidates,
+    universeMeta: snapshot.meta,
   };
 };
 
@@ -644,7 +716,8 @@ export const runStructuredScanner = async (
     };
   }
 
-  const fullUniverse = await _fetchFullAshareSnapshot();
+  const snapshot = await _fetchFullAshareSnapshot();
+  const fullUniverse = snapshot.items;
   if (!fullUniverse.length) {
     throw new Error('A股全量快照获取失败，请稍后重试。');
   }
@@ -931,6 +1004,7 @@ export const runStructuredScanner = async (
       filters.volumeTrend === 'up' ? '今日放量' : filters.volumeTrend === 'down' ? '今日缩量' : null,
     ].filter(Boolean).join(' · '),
     diagnostics,
+    universeMeta: snapshot.meta,
   };
 };
 

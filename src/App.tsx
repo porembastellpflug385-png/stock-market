@@ -342,6 +342,13 @@ type StrategyBoardState = {
   requestedScanned?: number;
   candidates: ScannerCandidate[];
   parserSummary?: string | null;
+  universeMeta?: {
+    source: 'live' | 'cache';
+    fetchedAt: string | null;
+    coverageGroups: string[];
+    estimatedTotal: number;
+    coveredCount: number;
+  } | null;
   diagnostics?: {
     topFilter: string | null;
     breakdown: Array<{ label: string; dropped: number }>;
@@ -1249,7 +1256,7 @@ function App() {
   const [scannerStrategies, setScannerStrategies] = useState<ScannerStrategy[]>([]);
   const [editingScannerStrategy, setEditingScannerStrategy] = useState<ScannerStrategy>(createDefaultScannerStrategy());
   const [activeScannerStrategyId, setActiveScannerStrategyId] = useState<string | null>(null);
-  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, requestedScanned: 0, candidates: [], parserSummary: null, diagnostics: null });
+  const [strategyBoard, setStrategyBoard] = useState<StrategyBoardState>({ strategyId: null, scannedAt: null, scanned: 0, requestedScanned: 0, candidates: [], parserSummary: null, universeMeta: null, diagnostics: null });
   const [strategyBoardLoading, setStrategyBoardLoading] = useState(false);
   const [strategyBoardAutoRefresh, setStrategyBoardAutoRefresh] = useState(true);
   const [scannerValidationLoading, setScannerValidationLoading] = useState(false);
@@ -1964,6 +1971,15 @@ function App() {
         requestedScanned: Number(payload.requestedScanned || payload.scanned || 0),
         candidates: filteredCandidates,
         parserSummary: typeof payload?.parser?.summary === 'string' ? payload.parser.summary : null,
+        universeMeta: payload?.universeMeta && typeof payload.universeMeta === 'object'
+          ? {
+              source: payload.universeMeta.source === 'cache' ? 'cache' : 'live',
+              fetchedAt: typeof payload.universeMeta.fetchedAt === 'string' ? payload.universeMeta.fetchedAt : null,
+              coverageGroups: Array.isArray(payload.universeMeta.coverageGroups) ? payload.universeMeta.coverageGroups : [],
+              estimatedTotal: Number(payload.universeMeta.estimatedTotal || payload.requestedScanned || 0),
+              coveredCount: Number(payload.universeMeta.coveredCount || payload.requestedScanned || 0),
+            }
+          : null,
         diagnostics: payload?.diagnostics && typeof payload.diagnostics === 'object'
           ? {
               topFilter: typeof payload.diagnostics.topFilter === 'string' ? payload.diagnostics.topFilter : null,
@@ -2946,6 +2962,32 @@ function App() {
             <div className="mt-4 rounded-2xl border border-emerald-300/15 bg-emerald-300/8 p-4 text-sm leading-6 text-emerald-100">
               当前策略已按自然语言解析执行：
               <div className="mt-1 text-xs text-emerald-200/90">{strategyBoard.parserSummary}</div>
+            </div>
+          )}
+          {strategyBoard.universeMeta && (
+            <div className="mt-4 rounded-2xl border border-sky-300/15 bg-sky-300/8 p-4 text-sm leading-6 text-sky-100">
+              <div>
+                本次扫描来源：
+                <span className="ml-2 font-semibold">{strategyBoard.universeMeta.source === 'cache' ? '缓存命中' : '实时抓取'}</span>
+              </div>
+              <div className="mt-1">
+                覆盖进度：
+                <span className="ml-2 font-semibold">
+                  {strategyBoard.universeMeta.coveredCount} / {strategyBoard.universeMeta.estimatedTotal || strategyBoard.requestedScanned || 0}
+                </span>
+                <span className="ml-2 text-xs text-sky-200/90">
+                  {(() => {
+                    const total = strategyBoard.universeMeta.estimatedTotal || strategyBoard.requestedScanned || 0;
+                    const covered = strategyBoard.universeMeta.coveredCount || 0;
+                    const pct = total > 0 ? ((covered / total) * 100).toFixed(1) : '0.0';
+                    return `约 ${pct}%`;
+                  })()}
+                </span>
+              </div>
+              <div className="mt-1 text-xs text-sky-200/90">
+                覆盖板块：{strategyBoard.universeMeta.coverageGroups.length ? strategyBoard.universeMeta.coverageGroups.join(' / ') : '未标记'}
+                {strategyBoard.universeMeta.fetchedAt ? ` · 快照时间 ${formatDateTime(strategyBoard.universeMeta.fetchedAt)}` : ''}
+              </div>
             </div>
           )}
           <div className="mt-5 space-y-3">

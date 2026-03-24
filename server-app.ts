@@ -1248,6 +1248,7 @@ export function createApp() {
           candidates: result.candidates,
           parser: { summary: result.summary },
           diagnostics: result.diagnostics,
+          universeMeta: result.universeMeta,
           scannedUniverse: [],
         });
       }
@@ -1262,6 +1263,7 @@ export function createApp() {
           requestedScanned: result.requestedScanned,
           candidates: result.candidates,
           parser: parsedRule,
+          universeMeta: result.universeMeta,
           scannedUniverse: [],
         });
       }
