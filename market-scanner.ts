@@ -282,6 +282,7 @@ const _EASTMONEY_HEADERS = {
 };
 
 const ASHARE_SNAPSHOT_TTL = 5 * 60 * 1000;
+const ASHARE_MIN_REASONABLE_SAMPLE = 1500;
 
 type AshareSnapshotItem = {
   symbol: string;
@@ -295,9 +296,30 @@ type AshareSnapshotItem = {
   return60Pct: number;
 };
 
+const _mapAshareSnapshotDiff = (diff: any[]): AshareSnapshotItem[] =>
+  diff
+    .filter((item) => item?.f12 && item?.f14)
+    .map((item) => {
+      const code = String(item.f12);
+      const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
+      const symbol = `${code}${suffix}`;
+      return {
+        symbol,
+        name: String(item.f14 || symbol),
+        market: 'CN' as const,
+        assetClass: 'equity' as const,
+        price: Number(item.f2 || 0),
+        turnoverCny: Number(item.f6 || 0),
+        amplitudePct: Number(item.f7 || 0),
+        previousClose: Number(item.f18 || 0),
+        return60Pct: Number(item.f24 || 0),
+      };
+    });
+
 let _ashareSnapshotCache: AshareSnapshotItem[] = [];
 let _ashareSnapshotFetchedAt = 0;
 let _ashareSnapshotInFlight: Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> | null = null;
+let _ashareSnapshotEstimatedTotal = 0;
 
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
   id: 'trend-follow',
@@ -313,8 +335,6 @@ const _ASHARE_MARKET_GROUPS = [
   { fs: 'm:1+t:2', label: '沪市主板' },
   { fs: 'm:1+t:23', label: '科创板' },
 ];
-
-const _ASHARE_COMBINED_FS = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
 
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
 
@@ -355,41 +375,26 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnap
   const all: AshareSnapshotItem[] = [];
   let estimatedTotal = 0;
 
-  for (let page = 1; page <= 40; page += 1) {
-    const response = await _safeFetch(
-      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(_ASHARE_COMBINED_FS)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
-      _EASTMONEY_HEADERS,
-    );
-    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-    const total = Number(response?.data?.total || 0);
-    if (page === 1 && Number.isFinite(total)) {
-      estimatedTotal = total;
+  for (const group of _ASHARE_MARKET_GROUPS) {
+    let total = 0;
+    for (let page = 1; page <= 40; page += 1) {
+      const response = await _safeFetch(
+        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(group.fs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+        _EASTMONEY_HEADERS,
+      );
+      const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+      if (page === 1) {
+        total = Number(response?.data?.total || 0);
+        if (Number.isFinite(total) && total > 0) {
+          estimatedTotal += total;
+        }
+      }
+      if (diff.length === 0) break;
+
+      all.push(..._mapAshareSnapshotDiff(diff));
+
+      if (total > 0 && page * pageSize >= total) break;
     }
-    if (diff.length === 0) break;
-
-    all.push(
-      ...diff
-        .filter((item) => item?.f12 && item?.f14)
-        .map((item) => {
-          const code = String(item.f12);
-          const suffix = code.startsWith('6') || code.startsWith('9') ? '.SS' : '.SZ';
-          const symbol = `${code}${suffix}`;
-          return {
-            symbol,
-            name: String(item.f14 || symbol),
-            market: 'CN' as const,
-            assetClass: 'equity' as const,
-            price: Number(item.f2 || 0),
-            turnoverCny: Number(item.f6 || 0),
-            amplitudePct: Number(item.f7 || 0),
-            previousClose: Number(item.f18 || 0),
-            return60Pct: Number(item.f24 || 0),
-          };
-        }),
-    );
-
-    if (total > 0 && page * pageSize >= total) break;
-    if (diff.length < pageSize) break;
   }
 
   const deduped = new Map<string, AshareSnapshotItem>();
@@ -403,6 +408,37 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnap
   };
 };
 
+const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number }> => {
+  const pageSize = 200;
+  const all: AshareSnapshotItem[] = [];
+  let estimatedTotal = 0;
+  const combinedFs = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
+
+  for (let page = 1; page <= 50; page += 1) {
+    const response = await _safeFetch(
+      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+      _EASTMONEY_HEADERS,
+    );
+    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+    const total = Number(response?.data?.total || 0);
+    if (page === 1 && Number.isFinite(total) && total > 0) {
+      estimatedTotal = total;
+    }
+    if (diff.length === 0) break;
+    all.push(..._mapAshareSnapshotDiff(diff));
+    if (total > 0 && page * pageSize >= total) break;
+  }
+
+  const deduped = new Map<string, AshareSnapshotItem>();
+  all.forEach((item) => {
+    deduped.set(item.symbol, item);
+  });
+  return {
+    items: [...deduped.values()],
+    estimatedTotal: estimatedTotal || deduped.size,
+  };
+};
+
 const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> => {
   const now = Date.now();
   if (_ashareSnapshotCache.length > 0 && now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL) {
@@ -412,7 +448,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
         source: 'cache',
         fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
         coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
-        estimatedTotal: _ashareSnapshotCache.length,
+        estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
         coveredCount: _ashareSnapshotCache.length,
       },
     };
@@ -424,17 +460,31 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
 
   _ashareSnapshotInFlight = (async () => {
     try {
-      const fresh = await _fetchFullAshareSnapshotFromSource();
-      if (fresh.items.length > 0) {
+      let fresh = await _fetchFullAshareSnapshotFromSource();
+      if (fresh.items.length < ASHARE_MIN_REASONABLE_SAMPLE) {
+        const backup = await _fetchFullAshareSnapshotFromBackupSource();
+        if (backup.items.length > fresh.items.length) {
+          const merged = new Map<string, AshareSnapshotItem>();
+          fresh.items.forEach((item) => merged.set(item.symbol, item));
+          backup.items.forEach((item) => merged.set(item.symbol, item));
+          fresh = {
+            items: [...merged.values()],
+            estimatedTotal: Math.max(fresh.estimatedTotal, backup.estimatedTotal, merged.size),
+            coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场备用源'],
+          };
+        }
+      }
+      if (fresh.items.length >= ASHARE_MIN_REASONABLE_SAMPLE) {
         _ashareSnapshotCache = fresh.items;
         _ashareSnapshotFetchedAt = Date.now();
+        _ashareSnapshotEstimatedTotal = fresh.estimatedTotal || fresh.items.length;
         return {
           items: fresh.items,
           meta: {
             source: 'live',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
             coverageGroups: fresh.coverageGroups,
-            estimatedTotal: fresh.estimatedTotal,
+            estimatedTotal: _ashareSnapshotEstimatedTotal,
             coveredCount: fresh.items.length,
           },
         };
@@ -446,21 +496,12 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
             source: 'cache',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
             coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
-            estimatedTotal: _ashareSnapshotCache.length,
+            estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
             coveredCount: _ashareSnapshotCache.length,
           },
         };
       }
-      return {
-        items: [],
-        meta: {
-          source: 'live',
-          fetchedAt: null,
-          coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
-          estimatedTotal: 0,
-          coveredCount: 0,
-        },
-      };
+      throw new Error(`A股全量快照样本异常偏少（${fresh.items.length}），已拒绝写入缓存。`);
     } catch {
       if (_ashareSnapshotCache.length > 0) {
         return {
@@ -469,7 +510,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
             source: 'cache',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
             coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
-            estimatedTotal: _ashareSnapshotCache.length,
+            estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
             coveredCount: _ashareSnapshotCache.length,
           },
         };
