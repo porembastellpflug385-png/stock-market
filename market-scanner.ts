@@ -96,6 +96,9 @@ export type ScannerUniverseMeta = {
   coverageGroups: string[];
   estimatedTotal: number;
   coveredCount: number;
+  accumulated: boolean;
+  rounds: number;
+  newlyAddedCount: number;
 };
 
 export const scannerTemplates: ScannerTemplate[] = [
@@ -284,6 +287,7 @@ const _EASTMONEY_HEADERS = {
 const ASHARE_SNAPSHOT_TTL = 5 * 60 * 1000;
 const ASHARE_MIN_REASONABLE_SAMPLE = 1500;
 const ASHARE_MIN_COVERAGE_RATIO = 0.8;
+const ASHARE_COMPLETE_COVERAGE_RATIO = 0.98;
 
 type AshareSnapshotItem = {
   symbol: string;
@@ -321,14 +325,25 @@ let _ashareSnapshotCache: AshareSnapshotItem[] = [];
 let _ashareSnapshotFetchedAt = 0;
 let _ashareSnapshotInFlight: Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> | null = null;
 let _ashareSnapshotEstimatedTotal = 0;
+let _ashareAccumulatedMap = new Map<string, AshareSnapshotItem>();
+let _ashareAccumulatedFetchedAt = 0;
+let _ashareAccumulatedRounds = 0;
+let _ashareAccumulatedCoverageGroups = new Set<string>();
 
 const _hasReasonableAshareSnapshot = (items: AshareSnapshotItem[]) =>
   Array.isArray(items) && items.length >= ASHARE_MIN_REASONABLE_SAMPLE;
+
+const _hasCompleteAshareCoverage = (coveredCount: number, estimatedTotal: number) =>
+  estimatedTotal > 0 && coveredCount >= Math.floor(estimatedTotal * ASHARE_COMPLETE_COVERAGE_RATIO);
 
 const _clearAshareSnapshotCache = () => {
   _ashareSnapshotCache = [];
   _ashareSnapshotFetchedAt = 0;
   _ashareSnapshotEstimatedTotal = 0;
+  _ashareAccumulatedMap = new Map<string, AshareSnapshotItem>();
+  _ashareAccumulatedFetchedAt = 0;
+  _ashareAccumulatedRounds = 0;
+  _ashareAccumulatedCoverageGroups = new Set<string>();
 };
 
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
@@ -452,7 +467,11 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
     _clearAshareSnapshotCache();
   }
 
-  if (_ashareSnapshotCache.length > 0 && now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL) {
+  if (
+    _ashareSnapshotCache.length > 0 &&
+    now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL &&
+    _hasCompleteAshareCoverage(_ashareSnapshotCache.length, _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length)
+  ) {
     return {
       items: _ashareSnapshotCache,
       meta: {
@@ -461,6 +480,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
         coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
         estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
         coveredCount: _ashareSnapshotCache.length,
+        accumulated: true,
+        rounds: _ashareAccumulatedRounds,
+        newlyAddedCount: 0,
       },
     };
   }
@@ -489,17 +511,33 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
         }
       }
       if (_hasReasonableAshareSnapshot(fresh.items)) {
-        _ashareSnapshotCache = fresh.items;
+        const previousCovered = _ashareAccumulatedMap.size;
+        fresh.items.forEach((item) => _ashareAccumulatedMap.set(item.symbol, item));
+        _ashareAccumulatedRounds += 1;
+        _ashareAccumulatedFetchedAt = Date.now();
+        fresh.coverageGroups.forEach((group) => _ashareAccumulatedCoverageGroups.add(group));
+
+        const accumulatedItems = [..._ashareAccumulatedMap.values()];
+        const newlyAddedCount = Math.max(0, accumulatedItems.length - previousCovered);
+
+        _ashareSnapshotCache = accumulatedItems;
         _ashareSnapshotFetchedAt = Date.now();
-        _ashareSnapshotEstimatedTotal = fresh.estimatedTotal || fresh.items.length;
+        _ashareSnapshotEstimatedTotal = Math.max(
+          _ashareSnapshotEstimatedTotal || 0,
+          fresh.estimatedTotal || 0,
+          accumulatedItems.length,
+        );
         return {
-          items: fresh.items,
+          items: accumulatedItems,
           meta: {
             source: 'live',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
-            coverageGroups: fresh.coverageGroups,
+            coverageGroups: [..._ashareAccumulatedCoverageGroups, '累计覆盖池'],
             estimatedTotal: _ashareSnapshotEstimatedTotal,
-            coveredCount: fresh.items.length,
+            coveredCount: accumulatedItems.length,
+            accumulated: true,
+            rounds: _ashareAccumulatedRounds,
+            newlyAddedCount,
           },
         };
       }
@@ -509,9 +547,12 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           meta: {
             source: 'cache',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
-            coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+            coverageGroups: [..._ashareAccumulatedCoverageGroups, '累计覆盖池'],
             estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
             coveredCount: _ashareSnapshotCache.length,
+            accumulated: true,
+            rounds: _ashareAccumulatedRounds,
+            newlyAddedCount: 0,
           },
         };
       }
@@ -523,9 +564,12 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           meta: {
             source: 'cache',
             fetchedAt: new Date(_ashareSnapshotFetchedAt).toISOString(),
-            coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
+            coverageGroups: [..._ashareAccumulatedCoverageGroups, '累计覆盖池'],
             estimatedTotal: _ashareSnapshotEstimatedTotal || _ashareSnapshotCache.length,
             coveredCount: _ashareSnapshotCache.length,
+            accumulated: true,
+            rounds: _ashareAccumulatedRounds,
+            newlyAddedCount: 0,
           },
         };
       }
@@ -537,6 +581,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
           estimatedTotal: 0,
           coveredCount: 0,
+          accumulated: false,
+          rounds: 0,
+          newlyAddedCount: 0,
         },
       };
     } finally {

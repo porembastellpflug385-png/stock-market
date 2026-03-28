@@ -348,6 +348,9 @@ type StrategyBoardState = {
     coverageGroups: string[];
     estimatedTotal: number;
     coveredCount: number;
+    accumulated: boolean;
+    rounds: number;
+    newlyAddedCount: number;
   } | null;
   diagnostics?: {
     topFilter: string | null;
@@ -1978,6 +1981,9 @@ function App() {
               coverageGroups: Array.isArray(payload.universeMeta.coverageGroups) ? payload.universeMeta.coverageGroups : [],
               estimatedTotal: Number(payload.universeMeta.estimatedTotal || payload.requestedScanned || 0),
               coveredCount: Number(payload.universeMeta.coveredCount || payload.requestedScanned || 0),
+              accumulated: Boolean(payload.universeMeta.accumulated),
+              rounds: Number(payload.universeMeta.rounds || 0),
+              newlyAddedCount: Number(payload.universeMeta.newlyAddedCount || 0),
             }
           : null,
         diagnostics: payload?.diagnostics && typeof payload.diagnostics === 'object'
@@ -2969,6 +2975,9 @@ function App() {
               <div>
                 本次扫描来源：
                 <span className="ml-2 font-semibold">{strategyBoard.universeMeta.source === 'cache' ? '缓存命中' : '实时抓取'}</span>
+                {strategyBoard.universeMeta.accumulated ? (
+                  <span className="ml-2 text-xs text-sky-200/90">· 累计覆盖模式</span>
+                ) : null}
               </div>
               <div className="mt-1">
                 覆盖进度：
@@ -2983,6 +2992,10 @@ function App() {
                     return `约 ${pct}%`;
                   })()}
                 </span>
+              </div>
+              <div className="mt-1 text-xs text-sky-200/90">
+                已累计轮次：{strategyBoard.universeMeta.rounds || 0}
+                <span className="ml-2">本轮新增覆盖：{strategyBoard.universeMeta.newlyAddedCount || 0}</span>
               </div>
               <div className="mt-1 text-xs text-sky-200/90">
                 覆盖板块：{strategyBoard.universeMeta.coverageGroups.length ? strategyBoard.universeMeta.coverageGroups.join(' / ') : '未标记'}
