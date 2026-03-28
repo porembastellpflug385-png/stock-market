@@ -499,16 +499,14 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
         : ASHARE_MIN_REASONABLE_SAMPLE;
       if (fresh.items.length < Math.max(ASHARE_MIN_REASONABLE_SAMPLE, estimatedFloor)) {
         const backup = await _fetchFullAshareSnapshotFromBackupSource();
-        if (backup.items.length > fresh.items.length) {
-          const merged = new Map<string, AshareSnapshotItem>();
-          fresh.items.forEach((item) => merged.set(item.symbol, item));
-          backup.items.forEach((item) => merged.set(item.symbol, item));
-          fresh = {
-            items: [...merged.values()],
-            estimatedTotal: Math.max(fresh.estimatedTotal, backup.estimatedTotal, merged.size),
-            coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场备用源'],
-          };
-        }
+        const merged = new Map<string, AshareSnapshotItem>();
+        fresh.items.forEach((item) => merged.set(item.symbol, item));
+        backup.items.forEach((item) => merged.set(item.symbol, item));
+        fresh = {
+          items: [...merged.values()],
+          estimatedTotal: Math.max(fresh.estimatedTotal, backup.estimatedTotal, merged.size),
+          coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场主源', '分板块补扫备用源'],
+        };
       }
       if (_hasReasonableAshareSnapshot(fresh.items)) {
         const previousCovered = _ashareAccumulatedMap.size;
