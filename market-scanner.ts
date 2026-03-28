@@ -321,6 +321,15 @@ let _ashareSnapshotFetchedAt = 0;
 let _ashareSnapshotInFlight: Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> | null = null;
 let _ashareSnapshotEstimatedTotal = 0;
 
+const _hasReasonableAshareSnapshot = (items: AshareSnapshotItem[]) =>
+  Array.isArray(items) && items.length >= ASHARE_MIN_REASONABLE_SAMPLE;
+
+const _clearAshareSnapshotCache = () => {
+  _ashareSnapshotCache = [];
+  _ashareSnapshotFetchedAt = 0;
+  _ashareSnapshotEstimatedTotal = 0;
+};
+
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
   id: 'trend-follow',
   name: '结构化全量扫描',
@@ -441,6 +450,10 @@ const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: Asha
 
 const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]; meta: ScannerUniverseMeta }> => {
   const now = Date.now();
+  if (_ashareSnapshotCache.length > 0 && !_hasReasonableAshareSnapshot(_ashareSnapshotCache)) {
+    _clearAshareSnapshotCache();
+  }
+
   if (_ashareSnapshotCache.length > 0 && now - _ashareSnapshotFetchedAt < ASHARE_SNAPSHOT_TTL) {
     return {
       items: _ashareSnapshotCache,
@@ -474,7 +487,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           };
         }
       }
-      if (fresh.items.length >= ASHARE_MIN_REASONABLE_SAMPLE) {
+      if (_hasReasonableAshareSnapshot(fresh.items)) {
         _ashareSnapshotCache = fresh.items;
         _ashareSnapshotFetchedAt = Date.now();
         _ashareSnapshotEstimatedTotal = fresh.estimatedTotal || fresh.items.length;
@@ -489,7 +502,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           },
         };
       }
-      if (_ashareSnapshotCache.length > 0) {
+      if (_hasReasonableAshareSnapshot(_ashareSnapshotCache)) {
         return {
           items: _ashareSnapshotCache,
           meta: {
@@ -503,7 +516,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
       }
       throw new Error(`A股全量快照样本异常偏少（${fresh.items.length}），已拒绝写入缓存。`);
     } catch {
-      if (_ashareSnapshotCache.length > 0) {
+      if (_hasReasonableAshareSnapshot(_ashareSnapshotCache)) {
         return {
           items: _ashareSnapshotCache,
           meta: {
