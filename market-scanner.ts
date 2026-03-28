@@ -283,6 +283,7 @@ const _EASTMONEY_HEADERS = {
 
 const ASHARE_SNAPSHOT_TTL = 5 * 60 * 1000;
 const ASHARE_MIN_REASONABLE_SAMPLE = 1500;
+const ASHARE_MIN_COVERAGE_RATIO = 0.8;
 
 type AshareSnapshotItem = {
   symbol: string;
@@ -339,10 +340,10 @@ const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
 
 const _ASHARE_MARKET_GROUPS = [
   { fs: 'm:0+t:6', label: '深市主板' },
-  { fs: 'm:0+t:13', label: '中小板' },
   { fs: 'm:0+t:80', label: '创业板' },
   { fs: 'm:1+t:2', label: '沪市主板' },
   { fs: 'm:1+t:23', label: '科创板' },
+  { fs: 'm:0+t:81+s:2048', label: '北交所' },
 ];
 
 const _round = (value: number, digits = 2) => Number(value.toFixed(digits));
@@ -383,6 +384,37 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnap
   const pageSize = 200;
   const all: AshareSnapshotItem[] = [];
   let estimatedTotal = 0;
+  const combinedFs = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
+
+  for (let page = 1; page <= 60; page += 1) {
+    const response = await _safeFetch(
+      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+      _EASTMONEY_HEADERS,
+    );
+    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+    if (page === 1) {
+      estimatedTotal = Number(response?.data?.total || 0);
+    }
+    if (diff.length === 0) break;
+    all.push(..._mapAshareSnapshotDiff(diff));
+    if (estimatedTotal > 0 && page * pageSize >= estimatedTotal) break;
+  }
+
+  const deduped = new Map<string, AshareSnapshotItem>();
+  all.forEach((item) => {
+    deduped.set(item.symbol, item);
+  });
+  return {
+    items: [...deduped.values()],
+    estimatedTotal: estimatedTotal || deduped.size,
+    coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场主源'],
+  };
+};
+
+const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number }> => {
+  const pageSize = 200;
+  const all: AshareSnapshotItem[] = [];
+  let estimatedTotal = 0;
 
   for (const group of _ASHARE_MARKET_GROUPS) {
     let total = 0;
@@ -399,43 +431,9 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnap
         }
       }
       if (diff.length === 0) break;
-
       all.push(..._mapAshareSnapshotDiff(diff));
-
       if (total > 0 && page * pageSize >= total) break;
     }
-  }
-
-  const deduped = new Map<string, AshareSnapshotItem>();
-  all.forEach((item) => {
-    deduped.set(item.symbol, item);
-  });
-  return {
-    items: [...deduped.values()],
-    estimatedTotal: estimatedTotal || deduped.size,
-    coverageGroups: _ASHARE_MARKET_GROUPS.map((item) => item.label),
-  };
-};
-
-const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number }> => {
-  const pageSize = 200;
-  const all: AshareSnapshotItem[] = [];
-  let estimatedTotal = 0;
-  const combinedFs = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
-
-  for (let page = 1; page <= 50; page += 1) {
-    const response = await _safeFetch(
-      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
-      _EASTMONEY_HEADERS,
-    );
-    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-    const total = Number(response?.data?.total || 0);
-    if (page === 1 && Number.isFinite(total) && total > 0) {
-      estimatedTotal = total;
-    }
-    if (diff.length === 0) break;
-    all.push(..._mapAshareSnapshotDiff(diff));
-    if (total > 0 && page * pageSize >= total) break;
   }
 
   const deduped = new Map<string, AshareSnapshotItem>();
@@ -474,7 +472,10 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
   _ashareSnapshotInFlight = (async () => {
     try {
       let fresh = await _fetchFullAshareSnapshotFromSource();
-      if (fresh.items.length < ASHARE_MIN_REASONABLE_SAMPLE) {
+      const estimatedFloor = fresh.estimatedTotal > 0
+        ? Math.floor(fresh.estimatedTotal * ASHARE_MIN_COVERAGE_RATIO)
+        : ASHARE_MIN_REASONABLE_SAMPLE;
+      if (fresh.items.length < Math.max(ASHARE_MIN_REASONABLE_SAMPLE, estimatedFloor)) {
         const backup = await _fetchFullAshareSnapshotFromBackupSource();
         if (backup.items.length > fresh.items.length) {
           const merged = new Map<string, AshareSnapshotItem>();
