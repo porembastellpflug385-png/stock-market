@@ -99,6 +99,9 @@ export type ScannerUniverseMeta = {
   accumulated: boolean;
   rounds: number;
   newlyAddedCount: number;
+  currentPage: number;
+  totalPages: number;
+  nextPage: number;
 };
 
 export const scannerTemplates: ScannerTemplate[] = [
@@ -288,6 +291,8 @@ const ASHARE_SNAPSHOT_TTL = 5 * 60 * 1000;
 const ASHARE_MIN_REASONABLE_SAMPLE = 1500;
 const ASHARE_MIN_COVERAGE_RATIO = 0.8;
 const ASHARE_COMPLETE_COVERAGE_RATIO = 0.98;
+const ASHARE_PAGE_SIZE = 200;
+const ASHARE_FETCH_CONCURRENCY = 4;
 
 type AshareSnapshotItem = {
   symbol: string;
@@ -329,6 +334,8 @@ let _ashareAccumulatedMap = new Map<string, AshareSnapshotItem>();
 let _ashareAccumulatedFetchedAt = 0;
 let _ashareAccumulatedRounds = 0;
 let _ashareAccumulatedCoverageGroups = new Set<string>();
+let _ashareBatchCursorPage = 1;
+let _ashareTotalPages = 1;
 
 const _hasReasonableAshareSnapshot = (items: AshareSnapshotItem[]) =>
   Array.isArray(items) && items.length >= ASHARE_MIN_REASONABLE_SAMPLE;
@@ -344,6 +351,8 @@ const _clearAshareSnapshotCache = () => {
   _ashareAccumulatedFetchedAt = 0;
   _ashareAccumulatedRounds = 0;
   _ashareAccumulatedCoverageGroups = new Set<string>();
+  _ashareBatchCursorPage = 1;
+  _ashareTotalPages = 1;
 };
 
 const _STRUCTURED_SCAN_TEMPLATE: ScannerTemplate = {
@@ -395,24 +404,32 @@ const _makeEastmoneySecid = (symbol: string) => {
   return `0.${code}`;
 };
 
-const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number; coverageGroups: string[] }> => {
-  const pageSize = 200;
-  const all: AshareSnapshotItem[] = [];
-  let estimatedTotal = 0;
+const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number; coverageGroups: string[]; currentPage: number; totalPages: number; nextPage: number }> => {
   const combinedFs = _ASHARE_MARKET_GROUPS.map((item) => item.fs).join(',');
+  const firstPage = await _safeFetch(
+    `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=1&pz=${ASHARE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+    _EASTMONEY_HEADERS,
+  );
+  const firstDiff = Array.isArray(firstPage?.data?.diff) ? firstPage.data.diff : [];
+  const estimatedTotal = Number(firstPage?.data?.total || 0);
+  const totalPages = estimatedTotal > 0 ? Math.max(1, Math.ceil(estimatedTotal / ASHARE_PAGE_SIZE)) : 1;
+  const all = [..._mapAshareSnapshotDiff(firstDiff)];
 
-  for (let page = 1; page <= 60; page += 1) {
-    const response = await _safeFetch(
-      `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
-      _EASTMONEY_HEADERS,
-    );
-    const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
-    if (page === 1) {
-      estimatedTotal = Number(response?.data?.total || 0);
-    }
-    if (diff.length === 0) break;
-    all.push(..._mapAshareSnapshotDiff(diff));
-    if (estimatedTotal > 0 && page * pageSize >= estimatedTotal) break;
+  if (totalPages > 1) {
+    const remainingPages = Array.from({ length: totalPages - 1 }, (_, index) => index + 2);
+    const settled = await _runWithConcurrency(remainingPages, ASHARE_FETCH_CONCURRENCY, async (page) => {
+      const response = await _safeFetch(
+        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(combinedFs)}&pn=${page}&pz=${ASHARE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+        _EASTMONEY_HEADERS,
+      );
+      const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
+      return _mapAshareSnapshotDiff(diff);
+    });
+    settled.forEach((result) => {
+      if (result.status === 'fulfilled') {
+        all.push(...result.value);
+      }
+    });
   }
 
   const deduped = new Map<string, AshareSnapshotItem>();
@@ -423,19 +440,21 @@ const _fetchFullAshareSnapshotFromSource = async (): Promise<{ items: AshareSnap
     items: [...deduped.values()],
     estimatedTotal: estimatedTotal || deduped.size,
     coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场主源'],
+    currentPage: totalPages,
+    totalPages,
+    nextPage: 1,
   };
 };
 
 const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: AshareSnapshotItem[]; estimatedTotal: number }> => {
-  const pageSize = 200;
   const all: AshareSnapshotItem[] = [];
   let estimatedTotal = 0;
 
   for (const group of _ASHARE_MARKET_GROUPS) {
     let total = 0;
-    for (let page = 1; page <= 40; page += 1) {
+    for (let page = 1; page <= Math.min(10, _ashareTotalPages || 10); page += 1) {
       const response = await _safeFetch(
-        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(group.fs)}&pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
+        `https://push2.eastmoney.com/api/qt/clist/get?fs=${encodeURIComponent(group.fs)}&pn=${page}&pz=${ASHARE_PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f24&fields=f2,f3,f5,f6,f7,f8,f12,f14,f15,f16,f17,f18,f24`,
         _EASTMONEY_HEADERS,
       );
       const diff = Array.isArray(response?.data?.diff) ? response.data.diff : [];
@@ -447,7 +466,7 @@ const _fetchFullAshareSnapshotFromBackupSource = async (): Promise<{ items: Asha
       }
       if (diff.length === 0) break;
       all.push(..._mapAshareSnapshotDiff(diff));
-      if (total > 0 && page * pageSize >= total) break;
+      if (total > 0 && page * ASHARE_PAGE_SIZE >= total) break;
     }
   }
 
@@ -483,6 +502,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
         accumulated: true,
         rounds: _ashareAccumulatedRounds,
         newlyAddedCount: 0,
+        currentPage: _ashareBatchCursorPage,
+        totalPages: _ashareTotalPages,
+        nextPage: _ashareBatchCursorPage,
       },
     };
   }
@@ -495,7 +517,7 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
     try {
       let fresh = await _fetchFullAshareSnapshotFromSource();
       const estimatedFloor = fresh.estimatedTotal > 0
-        ? Math.floor(fresh.estimatedTotal * ASHARE_MIN_COVERAGE_RATIO)
+        ? Math.floor(fresh.estimatedTotal * ASHARE_COMPLETE_COVERAGE_RATIO)
         : ASHARE_MIN_REASONABLE_SAMPLE;
       if (fresh.items.length < Math.max(ASHARE_MIN_REASONABLE_SAMPLE, estimatedFloor)) {
         const backup = await _fetchFullAshareSnapshotFromBackupSource();
@@ -506,6 +528,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           items: [...merged.values()],
           estimatedTotal: Math.max(fresh.estimatedTotal, backup.estimatedTotal, merged.size),
           coverageGroups: [..._ASHARE_MARKET_GROUPS.map((item) => item.label), '组合市场主源', '分板块补扫备用源'],
+          currentPage: fresh.currentPage,
+          totalPages: fresh.totalPages,
+          nextPage: fresh.nextPage,
         };
       }
       if (_hasReasonableAshareSnapshot(fresh.items)) {
@@ -517,6 +542,8 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
 
         const accumulatedItems = [..._ashareAccumulatedMap.values()];
         const newlyAddedCount = Math.max(0, accumulatedItems.length - previousCovered);
+        _ashareTotalPages = fresh.totalPages || _ashareTotalPages || 1;
+        _ashareBatchCursorPage = fresh.nextPage || _ashareBatchCursorPage;
 
         _ashareSnapshotCache = accumulatedItems;
         _ashareSnapshotFetchedAt = Date.now();
@@ -536,6 +563,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
             accumulated: true,
             rounds: _ashareAccumulatedRounds,
             newlyAddedCount,
+            currentPage: fresh.currentPage || 1,
+            totalPages: _ashareTotalPages,
+            nextPage: _ashareBatchCursorPage,
           },
         };
       }
@@ -551,6 +581,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
             accumulated: true,
             rounds: _ashareAccumulatedRounds,
             newlyAddedCount: 0,
+            currentPage: _ashareBatchCursorPage,
+            totalPages: _ashareTotalPages,
+            nextPage: _ashareBatchCursorPage,
           },
         };
       }
@@ -568,6 +601,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
             accumulated: true,
             rounds: _ashareAccumulatedRounds,
             newlyAddedCount: 0,
+            currentPage: _ashareBatchCursorPage,
+            totalPages: _ashareTotalPages,
+            nextPage: _ashareBatchCursorPage,
           },
         };
       }
@@ -582,6 +618,9 @@ const _fetchFullAshareSnapshot = async (): Promise<{ items: AshareSnapshotItem[]
           accumulated: false,
           rounds: 0,
           newlyAddedCount: 0,
+          currentPage: 1,
+          totalPages: 1,
+          nextPage: 1,
         },
       };
     } finally {

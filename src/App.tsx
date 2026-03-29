@@ -351,6 +351,9 @@ type StrategyBoardState = {
     accumulated: boolean;
     rounds: number;
     newlyAddedCount: number;
+    currentPage: number;
+    totalPages: number;
+    nextPage: number;
   } | null;
   diagnostics?: {
     topFilter: string | null;
@@ -1984,6 +1987,9 @@ function App() {
               accumulated: Boolean(payload.universeMeta.accumulated),
               rounds: Number(payload.universeMeta.rounds || 0),
               newlyAddedCount: Number(payload.universeMeta.newlyAddedCount || 0),
+              currentPage: Number(payload.universeMeta.currentPage || 1),
+              totalPages: Number(payload.universeMeta.totalPages || 1),
+              nextPage: Number(payload.universeMeta.nextPage || 1),
             }
           : null,
         diagnostics: payload?.diagnostics && typeof payload.diagnostics === 'object'
@@ -2996,6 +3002,10 @@ function App() {
               <div className="mt-1 text-xs text-sky-200/90">
                 已累计轮次：{strategyBoard.universeMeta.rounds || 0}
                 <span className="ml-2">本轮新增覆盖：{strategyBoard.universeMeta.newlyAddedCount || 0}</span>
+              </div>
+              <div className="mt-1 text-xs text-sky-200/90">
+                抓取页进度：第 {strategyBoard.universeMeta.currentPage || 1} / {strategyBoard.universeMeta.totalPages || 1} 页
+                <span className="ml-2">下一轮从第 {strategyBoard.universeMeta.nextPage || 1} 页继续</span>
               </div>
               <div className="mt-1 text-xs text-sky-200/90">
                 覆盖板块：{strategyBoard.universeMeta.coverageGroups.length ? strategyBoard.universeMeta.coverageGroups.join(' / ') : '未标记'}
